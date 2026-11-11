@@ -151,6 +151,19 @@ jobs:
             done
           } > pr-build-report.md
           gh api "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.pull_request.number }}/comments" -f body="$(cat pr-build-report.md)" || true
+      - name: Surface Gradle failures in check annotations
+        if: always()
+        shell: bash
+        run: |
+          for log in room-jvm.log android-build.log; do
+            if [ -f "$log" ]; then
+              while IFS= read -r message; do
+                message=${message//'%'/'%25'}
+                message=${message//$'\r'/'%0D'}
+                echo "::error title=${log}::${message}"
+              done < <(grep -E '^e:|FAILURE:|BUILD FAILED|Execution failed for task|^[[:space:]]*[^[:space:]].* FAILED$' "$log" | tail -n 20 || true)
+            fi
+          done
       - name: Enforce Build Success
         run: |
           if [ "${{ steps.room_jvm.outcome }}" != "success" ] || [ "${{ steps.android_build.outcome }}" != "success" ]; then
