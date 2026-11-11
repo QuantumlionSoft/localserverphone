@@ -93,6 +93,17 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
           if-no-files-found: error
+      - name: Upload build diagnostics for branch builds
+        if: always() && (github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/arena/')))
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocketpaas-build-diagnostics
+          path: |
+            room-jvm.log
+            android-build.log
+            app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+          if-no-files-found: warn
       - name: Report Build Diagnostics to Issue
         if: always() && github.event_name == 'push'
         env:
