@@ -5,6 +5,10 @@ import dev.pocketpaas.domain.model.ProjectType
 import dev.pocketpaas.domain.model.Site
 import dev.pocketpaas.domain.model.SiteCollectionState
 import dev.pocketpaas.domain.model.SiteStatus
+import dev.pocketpaas.domain.files.SiteFileEntry
+import dev.pocketpaas.domain.files.SiteFileManager
+import dev.pocketpaas.domain.files.SiteFileNotFoundException
+import dev.pocketpaas.domain.model.SiteNotFoundException
 import dev.pocketpaas.domain.remote.ApiKeyStore
 import dev.pocketpaas.domain.remote.RemoteDeployRequest
 import dev.pocketpaas.domain.remote.RemoteErrorKind
@@ -14,6 +18,8 @@ import dev.pocketpaas.domain.repository.SiteRepository
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.put
+import io.ktor.client.request.delete
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
@@ -84,6 +90,60 @@ class RemoteApiModuleTest {
         assertTrue(body.contains("😀".repeat(4)))
         assertFalse(body.contains("secret-head"))
         assertTrue(body.contains("\"publicUrl\":null"))
+        assertTrue(body.contains("\"customHostname\":null"))
+        fixture.repository.site = fixture.repository.site.copy(customHostname = "www.example.com")
+        val customHostnameBody = client.get("/api/sites") { authorize() }.bodyAsText()
+        assertTrue(customHostnameBody.contains("\"domainName\":\"example.com\""))
+        assertTrue(customHostnameBody.contains("\"customHostname\":\"www.example.com\""))
+    }
+
+    @Test fun `file manager page is hardened and site file API authenticates before reading or parsing`() = testApplication {
+        val fixture = Fixture()
+        application { installRemoteApi(fixture.dependencies()) }
+
+        val page = client.get("/_pocketpaas/manager/")
+        assertEquals(HttpStatusCode.OK, page.status)
+        assertEquals("DENY", page.headers["X-Frame-Options"])
+        assertTrue(page.headers["Content-Security-Policy"].orEmpty().contains("default-src 'none'"))
+        assertTrue(page.bodyAsText().contains("Site dosyaları"))
+        assertTrue(client.get("/_pocketpaas/manager.js").bodyAsText().contains("apiKey"))
+        assertEquals(HttpStatusCode.OK, client.get("/_pocketpaas/manager.css").status)
+
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/_pocketpaas/files/sites").status)
+        val malformed = client.put("/_pocketpaas/files/sites/1/file") { setBody("not json") }
+        assertEquals(HttpStatusCode.Unauthorized, malformed.status)
+        assertEquals(0, fixture.siteFiles.calls.get())
+    }
+
+    @Test fun `authenticated site file endpoints list read write create folder and delete`() = testApplication {
+        val fixture = Fixture()
+        application { installRemoteApi(fixture.dependencies()) }
+
+        val sites = client.get("/_pocketpaas/files/sites") { authorize() }
+        assertEquals(HttpStatusCode.OK, sites.status)
+        assertTrue(sites.bodyAsText().contains("example.com"))
+        val entries = client.get("/_pocketpaas/files/sites/1/entries") { authorize() }
+        assertEquals(HttpStatusCode.OK, entries.status)
+        assertTrue(entries.bodyAsText().contains("\"entries\""))
+        assertTrue(entries.bodyAsText().contains("index.html"))
+
+        val created = client.put("/_pocketpaas/files/sites/1/file") {
+            authorize()
+            setBody("{\"path\":\"index.html\",\"content\":\"<h1>hello</h1>\"}")
+        }
+        assertEquals(HttpStatusCode.NoContent, created.status)
+        val read = client.get("/_pocketpaas/files/sites/1/file?path=index.html") { authorize() }
+        assertEquals(HttpStatusCode.OK, read.status)
+        assertTrue(read.bodyAsText().contains("<h1>hello</h1>"))
+
+        val folder = client.post("/_pocketpaas/files/sites/1/directory") {
+            authorize()
+            setBody("{\"path\":\"assets\"}")
+        }
+        assertEquals(HttpStatusCode.Created, folder.status)
+        val deleted = client.delete("/_pocketpaas/files/sites/1/file?path=index.html") { authorize() }
+        assertEquals(HttpStatusCode.NoContent, deleted.status)
+        assertTrue(fixture.siteFiles.deleted)
     }
 
     @Test fun `multipart supports either order and cleans private archive after successful deployment`() = testApplication {
@@ -343,9 +403,61 @@ class RemoteApiModuleTest {
         val uploads = File(temporary.newFolder(), "uploads")
         val repository = MemorySites()
         val operations = FakeOperations(repository)
+        val siteFiles = MemorySiteFileManager()
         fun dependencies(policy: RemoteApiPolicy = RemoteApiPolicy()) = RemoteApiDependencies(
-            repository, operations, object : ApiKeyStore { override suspend fun token() = TOKEN }, uploads, policy,
+            sites = repository,
+            operations = operations,
+            keys = object : ApiKeyStore { override suspend fun token() = TOKEN },
+            uploadDirectory = uploads,
+            policy = policy,
+            siteFiles = siteFiles,
+            siteFileManagerHtml = "<!doctype html><h1>Site dosyaları</h1>",
+            siteFileManagerCss = "body { color: black; }",
+            siteFileManagerJavaScript = "const apiKey = '';",
         )
+    }
+
+    private class MemorySiteFileManager : SiteFileManager {
+        val calls = AtomicInteger()
+        val contents = linkedMapOf<String, String>()
+        val directories = linkedSetOf("")
+        var deleted = false
+        override suspend fun list(siteId: Long, relativeDirectory: String): List<SiteFileEntry> {
+            calls.incrementAndGet()
+            checkSite(siteId)
+            val files = contents.keys.filter { it.substringBeforeLast('/', "") == relativeDirectory }.map { path ->
+                SiteFileEntry(path.substringAfterLast('/'), false, contents.getValue(path).toByteArray().size.toLong())
+            }
+            val folders = directories.filter { it.isNotEmpty() && it.substringBeforeLast('/', "") == relativeDirectory }.map { path ->
+                SiteFileEntry(path.substringAfterLast('/'), true, null)
+            }
+            return if (relativeDirectory.isEmpty() && contents.isEmpty()) listOf(SiteFileEntry("index.html", false, 0))
+            else folders + files
+        }
+        override suspend fun read(siteId: Long, relativePath: String): String {
+            calls.incrementAndGet()
+            checkSite(siteId)
+            return contents[relativePath] ?: throw SiteFileNotFoundException(siteId, relativePath)
+        }
+        override suspend fun write(siteId: Long, relativePath: String, content: String) {
+            calls.incrementAndGet()
+            checkSite(siteId)
+            contents[relativePath] = content
+        }
+        override suspend fun createDirectory(siteId: Long, relativePath: String) {
+            calls.incrementAndGet()
+            checkSite(siteId)
+            directories += relativePath
+        }
+        override suspend fun delete(siteId: Long, relativePath: String) {
+            calls.incrementAndGet()
+            checkSite(siteId)
+            contents.remove(relativePath)
+            deleted = true
+        }
+        private fun checkSite(siteId: Long) {
+            if (siteId != 1L) throw SiteNotFoundException(siteId)
+        }
     }
 
     private class FakeOperations(private val sites: MemorySites) : RemoteSiteOperations {

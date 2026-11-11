@@ -6,6 +6,7 @@ import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import dev.pocketpaas.data.local.PocketPaaSDatabase
 import dev.pocketpaas.data.local.PlatformFeatureSchemas
+import dev.pocketpaas.data.local.CustomHostnameSchema
 import dev.pocketpaas.data.local.SiteDao
 import dev.pocketpaas.data.local.SiteEntity
 import dev.pocketpaas.data.local.SiteSchema
@@ -169,7 +170,7 @@ class RoomSqlVerificationTest {
         val database = Room.databaseBuilder<PocketPaaSDatabase>(file.absolutePath)
             .setDriver(driver)
             .setQueryCoroutineContext(Dispatchers.IO)
-            .addMigrations(migration, publicUrlMigration(), featureSchemaMigration())
+            .addMigrations(migration, publicUrlMigration(), featureSchemaMigration(), customHostnameMigration())
             .build()
         databases += database
 
@@ -188,20 +189,22 @@ class RoomSqlVerificationTest {
         val driver = BundledSQLiteDriver()
         val old = Room.databaseBuilder<PhaseTwoDatabase>(file.absolutePath)
             .setDriver(driver).setQueryCoroutineContext(Dispatchers.IO).build()
-        val original: SiteEntity
+        val originalId: Long
         try {
             old.platformSettingsDao().getOrCreate(LegacyPlatformSettingsEntity(installationId = "v2-id", createdAtEpochMillis = 77))
-            original = create(old.siteDao(), "preserved.example")
-            old.siteDao().appendLogs(original.id, "existing logs", 65_536)
+            originalId = old.siteDao().insertSite(
+                LegacySiteEntityV2(domainName = "preserved.example", internalPort = 20_000, projectType = ProjectType.STATIC, createdAt = 1L),
+            )
+            old.siteDao().appendLogs(originalId, "existing logs", 65_536)
         } finally { old.close() }
         val database = Room.databaseBuilder<PocketPaaSDatabase>(file.absolutePath)
             .setDriver(driver).setQueryCoroutineContext(Dispatchers.IO)
-            .addMigrations(publicUrlMigration(), featureSchemaMigration()).build().also(databases::add)
+            .addMigrations(publicUrlMigration(), featureSchemaMigration(), customHostnameMigration()).build().also(databases::add)
         assertEquals("v2-id", database.platformSettingsDao().getSettings()?.installationId)
         assertEquals(77L, database.platformSettingsDao().getSettings()?.createdAtEpochMillis)
         assertNull(database.platformSettingsDao().observePublicUrl().first())
-        assertEquals(original.internalPort, database.siteDao().getSite(original.id)?.internalPort)
-        assertEquals("existing logs", database.siteDao().getSite(original.id)?.logs)
+        assertEquals(20_000, database.siteDao().getSite(originalId)?.internalPort)
+        assertEquals("existing logs", database.siteDao().getSite(originalId)?.logs)
         assertEquals(1, database.platformSettingsDao().updatePublicUrl("https://gateway.trycloudflare.com"))
         assertEquals("https://gateway.trycloudflare.com", database.platformSettingsDao().observePublicUrl().first())
         assertEquals(1, database.platformSettingsDao().updatePublicUrl(null))
@@ -233,6 +236,12 @@ class RoomSqlVerificationTest {
     private fun featureSchemaMigration(): Migration = object : Migration(3, 4) {
         override fun migrate(connection: SQLiteConnection) {
             PlatformFeatureSchemas.statements.forEach { sql -> connection.execute(sql) }
+        }
+    }
+
+    private fun customHostnameMigration(): Migration = object : Migration(4, 5) {
+        override fun migrate(connection: SQLiteConnection) {
+            CustomHostnameSchema.statements.forEach { sql -> connection.execute(sql) }
         }
     }
 

@@ -1,19 +1,20 @@
-name: PocketPaaS Verification & APK Build
+name: Pocket PaaS Verification & APK Build
 
 on:
   push:
     branches: [ main, "arena/**" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ main ]
 
+# Build and validation jobs are read-only by default. Release permissions are
+# granted only to the dedicated publication job below.
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
 
 jobs:
   schema-and-policy-checks:
-    name: SQLite Schema v4 & Policy Contracts
+    name: SQLite Schema v5 & Policy Contracts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,16 +22,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Verify Room v4 SQLite migration chain
+      - name: Verify legacy Room v4 SQLite migration chain
         run: python3 verification/database/test_schema_v4.py
+      - name: Verify Room v5 custom-hostname schema and migration
+        run: python3 verification/database/test_schema_v5.py
       - name: Verify SSH and Service policy invariants
         run: python3 verification/database/test_policies.py
+      - name: Verify bounded runtime site-file operations
+        run: PYTHONDONTWRITEBYTECODE=1 python3 verification/runtime-files/test_files.py
       - name: Verify Backup HMAC, CSV formula guard and Remote API contracts
         run: python3 verification/database/test_backup_and_logs.py
 
   room-jvm-and-apk-build:
     name: Room JVM Tests & Debug APK Build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,7 +68,43 @@ jobs:
           chmod +x ./gradlew
           set -o pipefail
           ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug 2>&1 | tee android-build.log
-      - name: Report Build Diagnostics to PR
+      - name: Validate version tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          app_version="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*/\1/p' app/build.gradle.kts | head -n 1)"
+          expected_tag="v${app_version}-debug"
+          if [[ -z "$app_version" || "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            echo "Release tag '$GITHUB_REF_NAME' does not match expected '$expected_tag'." >&2
+            exit 1
+          fi
+      - name: Stage tested debug APK for release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && steps.room_jvm.outcome == 'success' && steps.android_build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocketpaas-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Upload pull-request debug APK for review
+        if: (github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/arena/'))) && steps.room_jvm.outcome == 'success' && steps.android_build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocketpaas-debug-apk-preview
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+          if-no-files-found: error
+      - name: Upload build diagnostics for branch builds
+        if: always() && (github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/arena/')))
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocketpaas-build-diagnostics
+          path: |
+            room-jvm.log
+            android-build.log
+            app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Report Build Diagnostics to Issue
         if: always() && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -87,24 +131,67 @@ jobs:
             fi
           } > report.md
           gh api repos/${GITHUB_REPOSITORY}/issues/1/comments -f body="$(cat report.md)" || true
-      - name: Publish Debug APK Tag Blob & Release
-        if: steps.android_build.outcome == 'success' && github.event_name == 'push'
+      - name: Post pull-request build diagnostics
+        if: always() && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
-          if [ -f "$APK_PATH" ]; then
-            cp "$APK_PATH" PocketPaaS-0.5.0-debug.apk
-            BLOB_SHA=$(git hash-object -w "$APK_PATH")
-            git tag -f apk-0.5.0-debug "$BLOB_SHA"
-            git push -f origin refs/tags/apk-0.5.0-debug
-            gh release delete v0.5.0-debug --yes || true
-            gh release create v0.5.0-debug PocketPaaS-0.5.0-debug.apk \
-              --title "Pocket PaaS 0.5.0-debug" \
-              --notes "Room v4, SSH yönetimi, PostgreSQL/Redis/MariaDB servisleri, imzalı yedekleme ve log arşivleme içeren debug APK." || true
-          fi
+          {
+            echo "### Build diagnostics for \`${GITHUB_SHA::7}\`"
+            echo "- Room JVM outcome: **${{ steps.room_jvm.outcome }}**"
+            echo "- Android build outcome: **${{ steps.android_build.outcome }}**"
+            for log in room-jvm.log android-build.log; do
+              if [ -f "$log" ]; then
+                echo "#### $log"
+                echo '```text'
+                grep -E "^e:|^w:|FAILURE:|BUILD FAILED|FAILED|Exception|Error" "$log" | tail -n 35 || true
+                tail -n 15 "$log"
+                echo '```'
+              fi
+            done
+          } > pr-build-report.md
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.pull_request.number }}/comments" -f body="$(cat pr-build-report.md)" || true
+      - name: Surface Gradle failures in check annotations
+        if: always()
+        shell: bash
+        run: |
+          for log in room-jvm.log android-build.log; do
+            if [ -f "$log" ]; then
+              while IFS= read -r message; do
+                message=${message//'%'/'%25'}
+                message=${message//$'\r'/'%0D'}
+                echo "::error title=${log}::${message}"
+              done < <(grep -E '^[ew]:|FAILURE:|BUILD FAILED|Execution failed for task|^[[:space:]]*[^[:space:]].* FAILED$' "$log" | tail -n 20 || true)
+            fi
+          done
       - name: Enforce Build Success
         run: |
           if [ "${{ steps.room_jvm.outcome }}" != "success" ] || [ "${{ steps.android_build.outcome }}" != "success" ]; then
             exit 1
           fi
+
+  publish-debug-apk:
+    name: Publish Versioned Debug APK
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [ schema-and-policy-checks, room-jvm-and-apk-build ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pocketpaas-debug-apk
+          path: release-artifacts
+      - name: Create immutable version release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          apk_name="PocketPaaS-${version}.apk"
+          test -f release-artifacts/app-debug.apk
+          cp release-artifacts/app-debug.apk "$apk_name"
+          gh release create "$GITHUB_REF_NAME" "$apk_name" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Pocket PaaS ${version}" \
+            --notes "Tested Pocket PaaS debug APK for ${version}." \
+            --verify-tag

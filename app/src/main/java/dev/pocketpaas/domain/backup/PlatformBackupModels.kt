@@ -16,6 +16,7 @@ data class SiteBackupEntry(
     val publicUrl: String?,
     val status: SiteStatus,
     val createdAt: Long,
+    val customHostname: String? = null,
 )
 
 data class PlatformBackupSnapshot(
@@ -30,7 +31,7 @@ data class PlatformBackupSnapshot(
     val recentActivity: List<ActivityEvent>,
 ) {
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 4
+        const val CURRENT_SCHEMA_VERSION = 5
         const val CURRENT_APP_VERSION = "0.5.0"
     }
 }

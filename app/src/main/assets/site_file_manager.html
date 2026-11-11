@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>PocketPaaS · Dosya yöneticisi</title>
+  <link rel="stylesheet" href="/_pocketpaas/manager.css">
+  <script src="/_pocketpaas/manager.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">POCKET PAAS</p>
+      <h1>Site dosyaları</h1>
+      <p class="muted">Yalnızca kayıtlı sitelerin görünür proje dosyaları yönetilir. Noktayla başlayan gizli dosyalar gösterilmez. Metin dosyaları 32 KiB ile sınırlıdır.</p>
+    </header>
+    <section id="login" class="card">
+      <h2>Güvenli bağlantı</h2>
+      <p class="muted">Uygulamadaki API anahtarınızı girin. Anahtar yalnız bu sekmenin belleğinde tutulur. Cloudflare erişimi HTTPS kullanır; LAN API'si HTTP olduğundan yalnız güvenilir yerel ağ veya VPN üzerinden bağlanın.</p>
+      <p id="login-message" role="status" aria-live="polite"></p>
+      <form id="login-form">
+        <label for="api-key">API anahtarı</label>
+        <input id="api-key" type="password" autocomplete="off" spellcheck="false" required>
+        <button type="submit">Bağlan</button>
+      </form>
+    </section>
+    <section id="workspace" class="card" hidden>
+      <div class="toolbar">
+        <label for="site-select">Site</label>
+        <select id="site-select"></select>
+        <button id="refresh" type="button" class="secondary">Yenile</button>
+        <button id="logout" type="button" class="secondary">Çıkış</button>
+      </div>
+      <div class="toolbar pathbar">
+        <button id="up" type="button" class="secondary">Geri</button>
+        <span id="path-label" class="path"></span>
+        <button id="new-folder" type="button" class="secondary">Yeni klasör</button>
+        <button id="new-file" type="button">Yeni metin dosyası</button>
+      </div>
+      <p id="message" role="status" aria-live="polite"></p>
+      <ul id="entries" aria-label="Site dosyaları"></ul>
+      <section id="editor" class="editor" hidden>
+        <div class="toolbar">
+          <h2 id="editor-name"></h2>
+          <button id="save" type="button">Kaydet</button>
+          <button id="delete" type="button" class="danger">Sil</button>
+        </div>
+        <textarea id="content" spellcheck="false" aria-label="Dosya içeriği"></textarea>
+        <p class="muted">Düzenleyici yalnız metin içeriklerini kaydeder; en fazla 32 KiB UTF-8.</p>
+      </section>
+    </section>
+    <noscript>Dosya yöneticisi için JavaScript etkin olmalıdır.</noscript>
+  </main>
+</body>
+</html>

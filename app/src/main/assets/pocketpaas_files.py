@@ -258,15 +258,38 @@ class RuntimeFiles:
                             raise FileStoreError("directory_exceeds_file_limit")
         return {"files": [str(self.root.joinpath(*parts, name)) for name in sorted(names)]}
 
+    def list_entries(self, target):
+        parts = self._parts(target)
+        entries = []
+        with self._directory(parts) as directory:
+            with os.scandir(directory) as children:
+                for child in children:
+                    attributes = child.stat(follow_symlinks=False)
+                    _reject_reparse(attributes)
+                    if stat.S_ISDIR(attributes.st_mode):
+                        kind = "directory"
+                    elif stat.S_ISREG(attributes.st_mode):
+                        kind = "file"
+                    else:
+                        continue
+                    entries.append({"name": child.name, "kind": kind,
+                                    "sizeBytes": attributes.st_size if kind == "file" else None})
+                    if len(entries) > MAX_FILES:
+                        raise FileStoreError("directory_exceeds_file_limit")
+        entries.sort(key=lambda item: (item["kind"] != "directory", item["name"].casefold(), item["name"]))
+        return {"entries": entries}
+
 
 def operate(root, operation, target, content=None):
-    if operation not in ("read", "write", "delete", "mkdir", "list"):
+    if operation not in ("read", "write", "delete", "mkdir", "list", "list_entries"):
         raise FileStoreError("unsupported_file_operation")
     if (operation == "write") != (content is not None):
         raise FileStoreError("invalid_file_arguments")
     with RuntimeFiles(root) as files:
         if operation == "write":
             return files.write(target, content)
+        if operation == "list_entries":
+            return files.list_entries(target)
         return getattr(files, operation)(target)
 
 

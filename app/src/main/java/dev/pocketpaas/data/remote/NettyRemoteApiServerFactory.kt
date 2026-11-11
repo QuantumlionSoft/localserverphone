@@ -3,6 +3,7 @@ package dev.pocketpaas.data.remote
 import dev.pocketpaas.core.config.RemoteApiPolicy
 import dev.pocketpaas.core.config.ServerConfig
 import dev.pocketpaas.domain.backup.PlatformBackupManager
+import dev.pocketpaas.domain.files.SiteFileManager
 import dev.pocketpaas.domain.remote.ApiKeyStore
 import dev.pocketpaas.domain.remote.RemoteApiServer
 import dev.pocketpaas.domain.remote.RemoteApiServerFactory
@@ -47,6 +48,8 @@ class NettyRemoteApiServerFactory(
     private val backup: PlatformBackupManager? = null,
     private val sshProvider: () -> SshManager? = { ssh },
     private val servicesProvider: () -> ManagedServices? = { services },
+    private val siteFiles: SiteFileManager? = null,
+    private val siteFileManagerWebAssets: SiteFileManagerWebAssets? = null,
 ) : RemoteApiServerFactory {
     override fun create(bindHost: String, operations: RemoteSiteOperations): RemoteApiServer {
         require(bindHost == "127.0.0.1" || bindHost == "0.0.0.0")
@@ -99,6 +102,10 @@ class NettyRemoteApiServerFactory(
                             activity = activity,
                             deployments = deployments,
                             backup = backup,
+                            siteFiles = siteFiles,
+                            siteFileManagerHtml = siteFileManagerWebAssets?.html,
+                            siteFileManagerCss = siteFileManagerWebAssets?.css,
+                            siteFileManagerJavaScript = siteFileManagerWebAssets?.javaScript,
                         ),
                     )
                 }

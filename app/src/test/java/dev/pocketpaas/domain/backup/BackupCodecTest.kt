@@ -40,7 +40,10 @@ class BackupCodecTest {
                 ),
             ),
             sites = listOf(
-                SiteBackupEntry(1, "demo.example", 18000, ProjectType.NODEJS, null, SiteStatus.RUNNING, 50L),
+                SiteBackupEntry(
+                    1, "demo.example", 18000, ProjectType.NODEJS, null, SiteStatus.RUNNING, 50L,
+                    customHostname = "www.demo.example",
+                ),
             ),
             recentDeployments = emptyList(),
             recentActivity = emptyList(),
@@ -60,6 +63,29 @@ class BackupCodecTest {
         assertEquals(1, verified.snapshot.sshAuthorizedKeys.size)
         assertEquals(parsed.fingerprint, verified.snapshot.sshAuthorizedKeys.single().fingerprint)
         assertEquals(1, verified.snapshot.services.size)
+        assertEquals("www.demo.example", verified.snapshot.sites.single().customHostname)
+        assertEquals(5, verified.snapshot.schemaVersion)
+    }
+
+    @Test
+    fun `duplicate custom hostnames in backup are rejected`() {
+        val snapshot = PlatformBackupSnapshot(
+            exportedAt = 1_000L,
+            sshSettings = SshSettings(port = 8022),
+            sshAuthorizedKeys = emptyList(),
+            services = emptyList(),
+            sites = listOf(
+                SiteBackupEntry(1, "site-one", 18000, ProjectType.STATIC, null, SiteStatus.STOPPED, 1, "www.example.com"),
+                SiteBackupEntry(2, "site-two", 18001, ProjectType.STATIC, null, SiteStatus.STOPPED, 2, "www.example.com"),
+            ),
+            recentDeployments = emptyList(),
+            recentActivity = emptyList(),
+        )
+        val json = BackupCodec.encodeEnvelopeJson(BackupCodec.createEnvelope(snapshot, secretKey = null))
+
+        val failure = runCatching { BackupCodec.decodeAndVerify(json, secretKey = null, requireSignature = false) }
+            .exceptionOrNull()
+        assertTrue(failure is IllegalArgumentException)
     }
 
     @Test

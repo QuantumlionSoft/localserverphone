@@ -32,8 +32,8 @@ android {
         applicationId = "dev.pocketpaas"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.5.0"
+        versionCode = 6
+        versionName = "0.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -119,6 +119,9 @@ android {
                 file("src/main/assets/pocketpaas_agent.py"),
                 file("src/main/assets/pocketpaas_files.py"),
                 file("src/main/assets/pocketpaas_deploy.py"),
+                file("src/main/assets/site_file_manager.html"),
+                file("src/main/assets/site_file_manager.css"),
+                file("src/main/assets/site_file_manager.js"),
             )
             it.testLogging.events("passed", "skipped", "failed")
         }

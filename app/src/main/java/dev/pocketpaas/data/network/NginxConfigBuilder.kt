@@ -13,6 +13,7 @@ class NginxConfigBuilder @Inject constructor(private val serverConfig: ServerCon
         layout: RuntimeLayout,
         includePaths: List<String>? = null,
         revision: String = "pocketpaas",
+        customHostIncludePaths: List<String>? = null,
     ): String {
         validateLayout(layout)
         require(REVISION.matches(revision)) { "Invalid Nginx configuration revision" }
@@ -22,6 +23,16 @@ class NginxConfigBuilder @Inject constructor(private val serverConfig: ServerCon
             require(includePaths.distinct().size == includePaths.size) { "Duplicate Nginx include" }
             includePaths.joinToString("\n        ") { path ->
                 require(isChildOf(path, layout.nginxHostsPath)) { "Nginx include must be in conf.d" }
+                "include ${quoted(path)};"
+            }
+        }
+        val customDirectory = customHostsDirectory(layout)
+        val customIncludes = if (customHostIncludePaths == null) {
+            "include ${quoted("$customDirectory/*.conf")};"
+        } else {
+            require(customHostIncludePaths.distinct().size == customHostIncludePaths.size) { "Duplicate custom-host Nginx include" }
+            customHostIncludePaths.joinToString("\n    ") { path ->
+                require(isChildOf(path, customDirectory)) { "Custom-host include must be in the custom-host directory" }
                 "include ${quoted(path)};"
             }
         }
@@ -84,6 +95,28 @@ class NginxConfigBuilder @Inject constructor(private val serverConfig: ServerCon
                         default_type text/plain;
                         return 200 "$revision";
                     }
+                    location = /manage {
+                        return 308 /manage/;
+                    }
+                    location = /manage/ {
+                        proxy_pass http://${serverConfig.apiHost}:${serverConfig.apiPort}/_pocketpaas/manager/;
+                        proxy_set_header Host ${'$'}host;
+                        proxy_set_header X-Forwarded-Proto ${'$'}pocketpaas_forwarded_proto;
+                        proxy_set_header X-Forwarded-Host ${'$'}host;
+                    }
+                    location = /_pocketpaas/manager.css {
+                        proxy_pass http://${serverConfig.apiHost}:${serverConfig.apiPort}/_pocketpaas/manager.css;
+                    }
+                    location = /_pocketpaas/manager.js {
+                        proxy_pass http://${serverConfig.apiHost}:${serverConfig.apiPort}/_pocketpaas/manager.js;
+                    }
+                    location ^~ /_pocketpaas/files/ {
+                        client_max_body_size 256k;
+                        proxy_pass http://${serverConfig.apiHost}:${serverConfig.apiPort};
+                        proxy_set_header Host ${'$'}host;
+                        proxy_set_header X-Forwarded-Proto ${'$'}pocketpaas_forwarded_proto;
+                        proxy_set_header X-Forwarded-Host ${'$'}host;
+                    }
                     location = / {
                         default_type text/plain;
                         return 200 "Pocket PaaS is running. Sites are served under /sites/<domain>/\n";
@@ -93,6 +126,7 @@ class NginxConfigBuilder @Inject constructor(private val serverConfig: ServerCon
                         return 404;
                     }
                 }
+                $customIncludes
             }
         """.trimIndent() + "\n"
     }
@@ -136,10 +170,62 @@ class NginxConfigBuilder @Inject constructor(private val serverConfig: ServerCon
         return "$redirect\n$body\n"
     }
 
+    /** Exact-host server exposes a project's root without changing its internal /sites/<domain>/ route. */
+    fun renderCustomVirtualHost(site: Site, rootDir: String, layout: RuntimeLayout): String {
+        validateLayout(layout)
+        validateSite(site)
+        validatePath(rootDir)
+        val hostname = checkNotNull(site.customHostname) { "A custom DNS hostname is required." }
+        val projectRoot = layout.projectsPath + "/" + site.domainName
+        require(rootDir == projectRoot || isChildOf(rootDir, projectRoot)) {
+            "Site root must be inside its own project directory"
+        }
+        val body = when (site.projectType) {
+            ProjectType.STATIC -> renderCustomStatic(rootDir, spa = false)
+            ProjectType.REACT -> renderCustomStatic(rootDir, spa = true)
+            ProjectType.DJANGO, ProjectType.NODEJS -> """
+                location / {
+                    proxy_pass http://127.0.0.1:${site.internalPort};
+                    proxy_http_version 1.1;
+                    proxy_set_header Host ${'$'}host;
+                    proxy_set_header X-Real-IP ${'$'}remote_addr;
+                    proxy_set_header X-Forwarded-For ${'$'}proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Host ${'$'}host;
+                    proxy_set_header X-Forwarded-Proto ${'$'}pocketpaas_forwarded_proto;
+                    proxy_set_header Upgrade ${'$'}http_upgrade;
+                    proxy_set_header Connection ${'$'}pocketpaas_connection;
+                    proxy_connect_timeout 5s;
+                    proxy_send_timeout 60s;
+                    proxy_read_timeout 60s;
+                }
+            """.trimIndent()
+        }
+        return """
+            server {
+                listen ${serverConfig.nginxHost}:${serverConfig.nginxPort};
+                server_name $hostname;
+                absolute_redirect off;
+                add_header X-Content-Type-Options nosniff always;
+                $body
+            }
+        """.trimIndent() + "\n"
+    }
+
     fun hostPath(layout: RuntimeLayout, site: Site): String {
         validateLayout(layout)
         validateSite(site)
         return layout.nginxHostsPath + "/" + site.domainName + ".conf"
+    }
+
+    fun customHostPath(layout: RuntimeLayout, site: Site): String {
+        validateLayout(layout)
+        validateSite(site)
+        return "${customHostsDirectory(layout)}/${site.domainName}.conf"
+    }
+
+    fun customHostsDirectory(layout: RuntimeLayout): String {
+        validateLayout(layout)
+        return layout.nginxHostsPath + "/custom"
     }
 
     fun sitePrefix(site: Site): String {
@@ -172,9 +258,39 @@ class NginxConfigBuilder @Inject constructor(private val serverConfig: ServerCon
         """.trimIndent()
     }
 
+    private fun renderCustomStatic(rootDir: String, spa: Boolean): String {
+        val exactIndex = if (spa) {
+            """
+                location = /index.html {
+                    alias ${quoted("$rootDir/index.html")};
+                    disable_symlinks on;
+                }
+            """.trimIndent()
+        } else ""
+        val fallback = if (spa) "error_page 404 = /index.html;" else ""
+        return """
+            $exactIndex
+            location / {
+                alias ${quoted("$rootDir/")};
+                index index.html;
+                autoindex off;
+                disable_symlinks on;
+                $fallback
+                location ~ (?:^|/)\. {
+                    return 403;
+                }
+            }
+        """.trimIndent()
+    }
+
     private fun validateSite(site: Site) {
         require(site.domainName == SiteInput.normalizeDomainName(site.domainName)) {
             "Site domain must use its canonical ASCII identity"
+        }
+        site.customHostname?.let { hostname ->
+            require(hostname == SiteInput.normalizeCustomHostname(hostname)) {
+                "Custom hostname must use its canonical ASCII identity"
+            }
         }
         require(site.internalPort in 1024..65535) { "Site port must be unprivileged" }
         require(site.internalPort != serverConfig.nginxPort && site.internalPort != serverConfig.apiPort) {

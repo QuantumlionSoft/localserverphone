@@ -19,6 +19,16 @@ object SiteInput {
         return ascii
     }
 
+    /** A custom public hostname is separate from the site's path identity and must be a FQDN. */
+    fun normalizeCustomHostname(input: String): String {
+        val hostname = normalizeDomainName(input)
+        require(hostname.contains('.')) { "Custom hostname must be a fully qualified DNS name" }
+        return hostname
+    }
+
+    fun isHostnameInZone(hostname: String, zoneName: String): Boolean =
+        hostname == zoneName || hostname.endsWith(".$zoneName")
+
     fun validateSiteId(id: Long) {
         require(id > 0) { "Site ID must be positive" }
     }

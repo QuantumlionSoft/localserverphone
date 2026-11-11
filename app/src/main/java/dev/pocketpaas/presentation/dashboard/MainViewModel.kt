@@ -12,6 +12,8 @@ import dev.pocketpaas.domain.dashboard.DashboardDevice
 import dev.pocketpaas.domain.dashboard.DashboardNetworkState
 import dev.pocketpaas.domain.dashboard.DashboardOperationKind
 import dev.pocketpaas.domain.dashboard.DashboardOperationState
+import dev.pocketpaas.domain.files.SiteFileEntry
+import dev.pocketpaas.domain.files.SiteFileManager
 import dev.pocketpaas.domain.logs.ActivityFilter
 import dev.pocketpaas.domain.logs.LogExportFormat
 import dev.pocketpaas.domain.logs.LogExportFormatter
@@ -24,6 +26,8 @@ import dev.pocketpaas.domain.model.ProjectType
 import dev.pocketpaas.domain.model.SiteCollectionState
 import dev.pocketpaas.domain.model.SiteInput
 import dev.pocketpaas.domain.model.SiteStatus
+import dev.pocketpaas.domain.network.CloudflareConnectionState
+import dev.pocketpaas.domain.network.CloudflareSitePublisher
 import dev.pocketpaas.domain.remote.ApiKeyStore
 import dev.pocketpaas.domain.remote.RemoteDeployRequest
 import dev.pocketpaas.domain.remote.RemoteServerRuntime
@@ -69,6 +73,8 @@ class MainViewModel @Inject constructor(
     private val deploymentHistory: DeploymentHistoryRepository = NoOpDeploymentHistoryRepository,
     private val activityRepository: ActivityRepository = NoOpActivityRepository,
     private val backupManager: PlatformBackupManager = NoOpPlatformBackupManager,
+    private val siteFileManager: SiteFileManager = NoOpSiteFileManager,
+    private val cloudflare: CloudflareSitePublisher = NoOpCloudflareSitePublisher,
 ) : ViewModel() {
 
     private val mutableState = MutableStateFlow(DashboardUiState())
@@ -79,6 +85,8 @@ class MainViewModel @Inject constructor(
     private var noticeId = 0L
     private var handledOperation = 0L
     private var operation = DashboardOperationState()
+    private var siteFileOperation: Job? = null
+    private var siteFileGeneration = 0L
 
     init {
         viewModelScope.launch {
@@ -120,6 +128,20 @@ class MainViewModel @Inject constructor(
                 if ((connection.nginxStatus == NetworkServiceStatus.FAILED && old.nginxStatus != connection.nginxStatus) ||
                     (connection.tunnelStatus == NetworkServiceStatus.FAILED && old.tunnelStatus != connection.tunnelStatus)
                 ) notify("Nginx veya tünel bağlantısı kurulamadı. Ağ ve Termux paketlerini kontrol edip bağlantıyı yeniden deneyin.")
+            }
+        }
+        viewModelScope.launch {
+            cloudflare.cloudflareConnection.collect { connection ->
+                mutableState.update { current ->
+                    val draft = current.cloudflareDraft
+                    current.copy(
+                        cloudflareConnection = connection,
+                        cloudflareDraft = if (connection.configured) draft.copy(
+                            accountId = draft.accountId.ifBlank { connection.accountId.orEmpty() },
+                            zoneName = draft.zoneName.ifBlank { connection.zoneName.orEmpty() },
+                        ) else draft,
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -298,6 +320,285 @@ class MainViewModel @Inject constructor(
         if (state.value.sites.any { it.id == id }) mutableState.update { it.copy(selectedSiteId = id) }
     }
     fun dismissLogs() { mutableState.update { it.copy(selectedSiteId = null) } }
+
+    fun openSiteFileManager(siteId: Long) {
+        if (!state.value.canManageSiteFiles || state.value.sites.none { it.id == siteId }) {
+            notify("Dosya yöneticisi için Termux bağlantısını ve proje durumunu kontrol edin.")
+            return
+        }
+        loadSiteFileDirectory(siteId, "", editorPath = null, editorContent = "")
+    }
+
+    fun closeSiteFileManager() {
+        siteFileGeneration++
+        siteFileOperation?.cancel()
+        siteFileOperation = null
+        mutableState.update { it.copy(siteFileManager = SiteFileManagerUiState()) }
+    }
+
+    fun refreshSiteFiles() {
+        val current = state.value.siteFileManager
+        val siteId = current.siteId ?: return
+        loadSiteFileDirectory(siteId, current.directory, current.editorPath, current.editorContent)
+    }
+
+    fun navigateSiteFileDirectory(relativeDirectory: String) {
+        val siteId = state.value.siteFileManager.siteId ?: return
+        loadSiteFileDirectory(siteId, relativeDirectory, editorPath = null, editorContent = "")
+    }
+
+    private fun loadSiteFileDirectory(siteId: Long, directory: String, editorPath: String?, editorContent: String) {
+        val generation = ++siteFileGeneration
+        siteFileOperation?.cancel()
+        mutableState.update { it.copy(siteFileManager = it.siteFileManager.copy(
+            siteId = siteId, directory = directory, loading = true, saving = false,
+            editorPath = editorPath, editorContent = editorContent, error = null,
+        )) }
+        siteFileOperation = viewModelScope.launch {
+            try {
+                val entries = siteFileManager.list(siteId, directory)
+                if (generation == siteFileGeneration) mutableState.update { current ->
+                    current.copy(siteFileManager = current.siteFileManager.copy(entries = entries, loading = false, error = null))
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (generation == siteFileGeneration) mutableState.update { current ->
+                    current.copy(siteFileManager = current.siteFileManager.copy(loading = false, error = failure.message ?: "Dosyalar listelenemedi."))
+                }
+            }
+        }
+    }
+
+    fun openSiteTextFile(relativePath: String) {
+        val current = state.value.siteFileManager
+        val siteId = current.siteId ?: return
+        val generation = ++siteFileGeneration
+        siteFileOperation?.cancel()
+        mutableState.update { it.copy(siteFileManager = it.siteFileManager.copy(loading = true, error = null)) }
+        siteFileOperation = viewModelScope.launch {
+            try {
+                val content = siteFileManager.read(siteId, relativePath)
+                if (generation == siteFileGeneration) mutableState.update { latest ->
+                    latest.copy(siteFileManager = latest.siteFileManager.copy(
+                        loading = false, editorPath = relativePath, editorContent = content, error = null,
+                    ))
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (generation == siteFileGeneration) mutableState.update { latest ->
+                    latest.copy(siteFileManager = latest.siteFileManager.copy(loading = false, error = failure.message ?: "Dosya açılamadı."))
+                }
+            }
+        }
+    }
+
+    fun setSiteFileEditorContent(content: String) {
+        mutableState.update { it.copy(siteFileManager = it.siteFileManager.copy(editorContent = content, error = null)) }
+    }
+
+    fun createSiteTextFile(name: String) {
+        val current = state.value.siteFileManager
+        val siteId = current.siteId ?: return
+        val path = listOf(current.directory, name).filter(String::isNotEmpty).joinToString("/")
+        mutateSiteFiles {
+            siteFileManager.write(siteId, path, "")
+            val entries = siteFileManager.list(siteId, current.directory)
+            mutableState.update { latest -> latest.copy(siteFileManager = latest.siteFileManager.copy(
+                entries = entries, editorPath = path, editorContent = "", error = null,
+            )) }
+        }
+    }
+
+    fun createSiteFileDirectory(name: String) {
+        val current = state.value.siteFileManager
+        val siteId = current.siteId ?: return
+        val path = listOf(current.directory, name).filter(String::isNotEmpty).joinToString("/")
+        mutateSiteFiles {
+            siteFileManager.createDirectory(siteId, path)
+            val entries = siteFileManager.list(siteId, current.directory)
+            mutableState.update { latest -> latest.copy(siteFileManager = latest.siteFileManager.copy(entries = entries, error = null)) }
+        }
+    }
+
+    fun saveSiteTextFile() {
+        val current = state.value.siteFileManager
+        val siteId = current.siteId ?: return
+        val path = current.editorPath ?: return
+        mutateSiteFiles {
+            siteFileManager.write(siteId, path, current.editorContent)
+            val entries = siteFileManager.list(siteId, current.directory)
+            mutableState.update { latest -> latest.copy(siteFileManager = latest.siteFileManager.copy(
+                entries = entries, editorPath = path, error = null,
+            )) }
+            notify("Dosya kaydedildi.")
+        }
+    }
+
+    fun deleteSiteTextFile(relativePath: String) {
+        val current = state.value.siteFileManager
+        val siteId = current.siteId ?: return
+        mutateSiteFiles {
+            siteFileManager.delete(siteId, relativePath)
+            val entries = siteFileManager.list(siteId, current.directory)
+            mutableState.update { latest ->
+                val files = latest.siteFileManager
+                latest.copy(siteFileManager = files.copy(
+                    entries = entries,
+                    editorPath = files.editorPath.takeUnless { it == relativePath },
+                    editorContent = if (files.editorPath == relativePath) "" else files.editorContent,
+                    error = null,
+                ))
+            }
+        }
+    }
+
+    private fun mutateSiteFiles(action: suspend () -> Unit) {
+        val generation = ++siteFileGeneration
+        siteFileOperation?.cancel()
+        mutableState.update { it.copy(siteFileManager = it.siteFileManager.copy(saving = true, error = null)) }
+        siteFileOperation = viewModelScope.launch {
+            try {
+                action()
+                if (generation == siteFileGeneration) mutableState.update { latest ->
+                    latest.copy(siteFileManager = latest.siteFileManager.copy(saving = false, error = null))
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (generation == siteFileGeneration) mutableState.update { latest ->
+                    latest.copy(siteFileManager = latest.siteFileManager.copy(saving = false, error = failure.message ?: "Dosya işlemi başarısız."))
+                }
+            }
+        }
+    }
+
+    // --- Cloudflare Named Tunnel and custom hostnames ---
+
+    fun setCloudflareApiToken(value: String) {
+        mutableState.update {
+            it.copy(cloudflareDraft = it.cloudflareDraft.copy(apiToken = value.take(512)), cloudflareError = null)
+        }
+    }
+
+    fun setCloudflareAccountId(value: String) {
+        mutableState.update {
+            it.copy(cloudflareDraft = it.cloudflareDraft.copy(accountId = value.take(64)), cloudflareError = null)
+        }
+    }
+
+    fun setCloudflareZoneName(value: String) {
+        mutableState.update {
+            it.copy(cloudflareDraft = it.cloudflareDraft.copy(zoneName = value.take(253)), cloudflareError = null)
+        }
+    }
+
+    fun configureCloudflare() {
+        val current = state.value
+        if (current.cloudflareBusy) return
+        val draft = current.cloudflareDraft
+        if (draft.accountId.isBlank() || draft.zoneName.isBlank()) {
+            mutableState.update { it.copy(cloudflareError = "Cloudflare Account ID ve zone adı gereklidir.") }
+            return
+        }
+        if (!current.cloudflareConnection.configured && draft.apiToken.isBlank()) {
+            mutableState.update { it.copy(cloudflareError = "İlk Cloudflare bağlantısı için API token gereklidir.") }
+            return
+        }
+        mutableState.update { it.copy(cloudflareBusy = true, cloudflareError = null) }
+        viewModelScope.launch {
+            try {
+                cloudflare.configureCloudflare(draft.apiToken, draft.accountId, draft.zoneName)
+                val connection = cloudflare.cloudflareConnection.value
+                check(connection.configured) { "Cloudflare bağlantısı doğrulanamadı." }
+                mutableState.update { latest ->
+                    latest.copy(
+                        cloudflareConnection = connection,
+                        cloudflareDraft = latest.cloudflareDraft.copy(
+                            apiToken = "",
+                            accountId = connection.accountId.orEmpty(),
+                            zoneName = connection.zoneName.orEmpty(),
+                        ),
+                        cloudflareBusy = false,
+                        cloudflareError = null,
+                    )
+                }
+                notify("Cloudflare hesabı ve zone doğrulandı. Token şifreli uygulama deposuna kaydedildi.")
+            } catch (cancelled: CancellationException) {
+                mutableState.update { it.copy(cloudflareBusy = false) }
+                throw cancelled
+            } catch (failure: Exception) {
+                mutableState.update { latest ->
+                    latest.copy(cloudflareBusy = false, cloudflareError = safeCloudflareError(failure, draft.apiToken))
+                }
+            }
+        }
+    }
+
+    fun disconnectCloudflare() {
+        val current = state.value
+        if (current.cloudflareBusy || !current.cloudflareConnection.configured) return
+        if (current.sites.any { it.customHostname != null }) {
+            mutableState.update { it.copy(cloudflareError = "Önce tüm özel hostname yönlendirmelerini kaldırın.") }
+            return
+        }
+        mutableState.update { it.copy(cloudflareBusy = true, cloudflareError = null) }
+        viewModelScope.launch {
+            try {
+                cloudflare.disconnectCloudflare()
+                mutableState.update { latest ->
+                    latest.copy(
+                        cloudflareConnection = CloudflareConnectionState(),
+                        cloudflareDraft = latest.cloudflareDraft.copy(apiToken = ""),
+                        cloudflareBusy = false,
+                        cloudflareError = null,
+                    )
+                }
+                notify("Cloudflare bağlantısı kesildi ve uygulamanın yönettiği Tunnel temizlendi.")
+            } catch (cancelled: CancellationException) {
+                mutableState.update { it.copy(cloudflareBusy = false) }
+                throw cancelled
+            } catch (failure: Exception) {
+                mutableState.update { latest ->
+                    latest.copy(cloudflareBusy = false, cloudflareError = failure.message ?: "Cloudflare bağlantısı kesilemedi.")
+                }
+            }
+        }
+    }
+
+    fun setSiteCustomHostname(siteId: Long, hostname: String?) {
+        val current = state.value
+        if (current.cloudflareBusy) return
+        if (!current.canManageCustomHostnames) {
+            mutableState.update { it.copy(cloudflareError = "Özel hostname yönetimi için Termux bağlantısını hazırlayın ve işlemin bitmesini bekleyin.") }
+            return
+        }
+        if (!current.cloudflareConnection.configured) {
+            mutableState.update { it.copy(cloudflareError = "Özel hostname atamadan önce Cloudflare bağlantısını kurun.") }
+            return
+        }
+        if (current.sites.none { it.id == siteId }) {
+            mutableState.update { it.copy(cloudflareError = "Bu proje artık mevcut değil; projeleri yenileyip tekrar deneyin.") }
+            return
+        }
+        mutableState.update { it.copy(cloudflareBusy = true, cloudflareError = null) }
+        viewModelScope.launch {
+            try {
+                cloudflare.setCustomHostname(siteId, hostname?.trim()?.takeIf(String::isNotEmpty))
+                mutableState.update { it.copy(cloudflareBusy = false, cloudflareError = null) }
+                notify(if (hostname.isNullOrBlank()) "Özel hostname kaldırıldı; DNS ve tünel rotası güncellendi." else "Özel hostname ve Cloudflare DNS yönlendirmesi güncellendi.")
+            } catch (cancelled: CancellationException) {
+                mutableState.update { it.copy(cloudflareBusy = false) }
+                throw cancelled
+            } catch (failure: Exception) {
+                mutableState.update { latest ->
+                    latest.copy(cloudflareBusy = false, cloudflareError = failure.message ?: "Özel hostname güncellenemedi.")
+                }
+            }
+        }
+    }
+
     fun startSite(id: Long) { if (state.value.canManageSites) perform { actions.startSite(id) } }
     fun stopSite(id: Long) { if (state.value.canManageSites) perform { actions.stopSite(id) } }
     fun cancelOperation() {
@@ -564,6 +865,11 @@ class MainViewModel @Inject constructor(
         mutableState.update { it.copy(draft = it.draft.copy(zipUri = null, zipName = null, error = message)) }
     }
     private fun draftError(message: String) { mutableState.update { it.copy(draft = it.draft.copy(error = message)) } }
+    private fun safeCloudflareError(failure: Throwable, submittedToken: String): String {
+        val raw = failure.message ?: "Cloudflare bağlantısı doğrulanamadı."
+        return submittedToken.takeIf(String::isNotEmpty)?.let { raw.replace(it, "[redacted]") }?.take(1_024)
+            ?: raw.take(1_024)
+    }
     private fun perform(action: () -> Unit) {
         try { action() } catch (_: Exception) { notify("İşlem başlatılamadı. İzinleri ve sunucu durumunu kontrol edin.") }
     }
@@ -611,6 +917,24 @@ class MainViewModel @Inject constructor(
             SignedBackupEnvelope(version = 1, algorithm = "NONE", exportedAt = 0, payloadJson = "{}", signatureHex = null)
         override suspend fun exportEnvelopeJson(signWithApiKey: Boolean): String = "{}"
         override suspend fun importEnvelopeJson(rawJson: String, requireSignature: Boolean): BackupRestoreSummary =
-            BackupRestoreSummary(4, false, 0, 0, false, 0)
+            BackupRestoreSummary(5, false, 0, 0, false, 0)
+    }
+
+    private object NoOpSiteFileManager : SiteFileManager {
+        override suspend fun list(siteId: Long, relativeDirectory: String): List<SiteFileEntry> = emptyList()
+        override suspend fun read(siteId: Long, relativePath: String): String = error("Site file manager is unavailable")
+        override suspend fun write(siteId: Long, relativePath: String, content: String) = Unit
+        override suspend fun createDirectory(siteId: Long, relativePath: String) = Unit
+        override suspend fun delete(siteId: Long, relativePath: String) = Unit
+    }
+
+    private object NoOpCloudflareSitePublisher : CloudflareSitePublisher {
+        override val cloudflareConnection: StateFlow<CloudflareConnectionState> =
+            MutableStateFlow(CloudflareConnectionState())
+        override suspend fun configureCloudflare(apiToken: String, accountId: String, zoneName: String): Unit =
+            error("Cloudflare management is unavailable")
+        override suspend fun disconnectCloudflare(): Unit = error("Cloudflare management is unavailable")
+        override suspend fun setCustomHostname(siteId: Long, hostname: String?): Unit =
+            error("Cloudflare management is unavailable")
     }
 }

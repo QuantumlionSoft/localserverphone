@@ -5,6 +5,7 @@ import com.google.gson.JsonParser
 import dev.pocketpaas.domain.process.ProcessCommand
 import dev.pocketpaas.domain.process.ProcessExecutor
 import dev.pocketpaas.domain.process.ProcessRequest
+import dev.pocketpaas.domain.system.RuntimeFileEntry
 import dev.pocketpaas.domain.system.RuntimeFileStore
 import dev.pocketpaas.domain.system.RuntimeScriptSource
 import java.io.File
@@ -55,6 +56,31 @@ class ShellRuntimeFileStore @Inject constructor(
         return value.asJsonArray.map { element ->
             if (!element.isJsonPrimitive || !element.asJsonPrimitive.isString) throw IOException("Invalid runtime file path.")
             element.asString
+        }
+    }
+
+    override suspend fun listEntries(directory: String): List<RuntimeFileEntry> {
+        val value = invoke("list_entries", directory).get("entries")
+            ?: throw IOException("Runtime file response is missing its entries.")
+        if (!value.isJsonArray || value.asJsonArray.size() > 128) throw IOException("Invalid runtime directory entries.")
+        return value.asJsonArray.map { element ->
+            if (!element.isJsonObject) throw IOException("Invalid runtime directory entry.")
+            val entry = element.asJsonObject
+            val name = entry.get("name")
+            val kind = entry.get("kind")
+            val size = entry.get("sizeBytes")
+            if (name == null || !name.isJsonPrimitive || !name.asJsonPrimitive.isString ||
+                kind == null || !kind.isJsonPrimitive || !kind.asJsonPrimitive.isString ||
+                kind.asString !in setOf("file", "directory")
+            ) throw IOException("Invalid runtime directory entry.")
+            val sizeBytes = when {
+                size == null || size.isJsonNull -> null
+                size.isJsonPrimitive && size.asJsonPrimitive.isNumber -> size.asLong.takeIf { it >= 0 }
+                    ?: throw IOException("Invalid runtime entry size.")
+                else -> throw IOException("Invalid runtime entry size.")
+            }
+            if ((kind.asString == "file") != (sizeBytes != null)) throw IOException("Invalid runtime entry size.")
+            RuntimeFileEntry(name.asString, kind.asString == "directory", sizeBytes)
         }
     }
 

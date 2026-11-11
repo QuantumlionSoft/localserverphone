@@ -31,6 +31,7 @@ class NginxConfigBuilderTest {
         assertFalse(config.contains("listen 0.0.0.0"))
         assertTrue(config.contains("pid \"$root/runtime/nginx.pid\";"))
         assertTrue(config.contains("include \"$root/nginx/conf.d/*.conf\";"))
+        assertTrue(config.contains("include \"$root/nginx/conf.d/custom/*.conf\";"))
         assertTrue(config.contains("location = /_pocketpaas/health"))
         assertTrue(config.contains("return 200 \"pocketpaas\";"))
         assertTrue(config.contains("absolute_redirect off;"))
@@ -48,15 +49,38 @@ class NginxConfigBuilderTest {
     }
 
     @Test
+    fun masterProxiesOnlyTheAuthenticatedSiteFileManagerToLoopbackApi() {
+        val config = builder.renderMaster(layout)
+        assertTrue(config.contains("location = /manage/"))
+        assertTrue(config.contains("proxy_pass http://127.0.0.1:8080/_pocketpaas/manager/;"))
+        assertTrue(config.contains("location ^~ /_pocketpaas/files/"))
+        assertTrue(config.contains("proxy_pass http://127.0.0.1:8080;"))
+        assertTrue(config.contains("client_max_body_size 256k;"))
+        assertFalse(config.contains("location /api"))
+        assertFalse(config.contains("location ^~ /api/"))
+    }
+
+    @Test
     fun candidateMasterIncludesOnlySuppliedPathsAndUsesItsRevision() {
         val paths = listOf("$root/nginx/conf.d/first.conf", "$root/nginx/conf.d/.candidate-second")
-        val config = builder.renderMaster(layout, paths, "revision-2")
+        val config = builder.renderMaster(layout, paths, "revision-2", emptyList())
         assertTrue(config.contains("include \"${paths[0]}\";"))
         assertTrue(config.contains("include \"${paths[1]}\";"))
         assertFalse(config.contains("*.conf"))
         assertTrue(config.contains("return 200 \"revision-2\";"))
-        val empty = builder.renderMaster(layout, emptyList())
+        val empty = builder.renderMaster(layout, emptyList(), customHostIncludePaths = emptyList())
         assertFalse(empty.contains("include "))
+    }
+
+    @Test
+    fun candidateMasterIncludesOnlyTheSuppliedCustomHostServerPaths() {
+        val candidate = "$root/nginx/conf.d/custom/.candidate-site"
+        val config = builder.renderMaster(layout, emptyList(), "custom-revision", listOf(candidate))
+        assertTrue(config.contains("include \"$candidate\";"))
+        assertFalse(config.contains("custom/*.conf"))
+        assertThrows(IllegalArgumentException::class.java) {
+            builder.renderMaster(layout, emptyList(), "custom-revision", listOf("$root/nginx/conf.d/escape.conf"))
+        }
     }
 
     @Test
@@ -91,7 +115,7 @@ class NginxConfigBuilderTest {
         val config = builder.renderVirtualHost(site(ProjectType.REACT), "$root/htdocs/example.com/dist", layout)
         assertTrue(config.contains("error_page 404 = /sites/example.com/index.html;"))
         assertTrue(config.contains("location = /sites/example.com/index.html {"))
-        assertTrue(config.contains("alias \"$root/htdocs/example.com/dist/index.html\";"))
+        assertTrue(config.contains("alias \"$root/htdocs/example.com/dist/\";"))
         assertFalse(config.contains("try_files"))
         assertEquals(1, Regex("error_page").findAll(config).count())
     }
@@ -108,6 +132,60 @@ class NginxConfigBuilderTest {
             assertTrue(config.contains("proxy_set_header Connection \$pocketpaas_connection;"))
             assertTrue(config.contains("proxy_cookie_path / /sites/example.com/;"))
             assertFalse(config.contains("alias "))
+        }
+    }
+
+    @Test
+    fun customHostnameServesStaticProjectFromRootWithoutChangingPathIdentityOrManagerRoutes() {
+        val site = site(ProjectType.STATIC).copy(customHostname = "www.public.example")
+        val config = builder.renderCustomVirtualHost(site, "$root/htdocs/example.com", layout)
+        assertTrue(config.contains("server_name www.public.example;"))
+        assertTrue(config.contains("listen 127.0.0.1:8081;"))
+        assertTrue(config.contains("location / {"))
+        assertTrue(config.contains("alias \"$root/htdocs/example.com/\";"))
+        assertTrue(config.contains("disable_symlinks on;"))
+        assertTrue(config.contains("return 403;"))
+        assertFalse(config.contains("/sites/example.com/"))
+        assertFalse(config.contains("/_pocketpaas/files/"))
+        assertEquals("/sites/example.com/", builder.sitePrefix(site))
+        assertEquals("$root/nginx/conf.d/custom/example.com.conf", builder.customHostPath(layout, site))
+    }
+
+    @Test
+    fun customHostnameSupportsReactFallbackAndDynamicProxyAtTheRoot() {
+        val react = builder.renderCustomVirtualHost(
+            site(ProjectType.REACT).copy(customHostname = "react.example.com"),
+            "$root/htdocs/example.com/dist",
+            layout,
+        )
+        assertTrue(react.contains("error_page 404 = /index.html;"))
+        assertTrue(react.contains("location = /index.html"))
+        assertTrue(react.contains("alias \"$root/htdocs/example.com/dist/index.html\";"))
+
+        val node = builder.renderCustomVirtualHost(
+            site(ProjectType.NODEJS).copy(customHostname = "api.example.com"),
+            "$root/htdocs/example.com",
+            layout,
+        )
+        assertTrue(node.contains("proxy_pass http://127.0.0.1:18000;"))
+        assertTrue(node.contains("proxy_set_header X-Forwarded-Host \$host;"))
+        assertFalse(node.contains("proxy_set_header X-Forwarded-Prefix"))
+    }
+
+    @Test
+    fun customHostnameMustBeCanonicalAndProjectRootRemainsSiteScoped() {
+        val site = site(ProjectType.STATIC)
+        listOf("", "my-app", "https://www.example.com", "../evil.example").forEach { hostname ->
+            assertThrows(IllegalArgumentException::class.java) {
+                builder.renderCustomVirtualHost(site.copy(customHostname = hostname), "$root/htdocs/example.com", layout)
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            builder.renderCustomVirtualHost(
+                site.copy(customHostname = "www.example.com"),
+                "$root/htdocs/another.example",
+                layout,
+            )
         }
     }
 
