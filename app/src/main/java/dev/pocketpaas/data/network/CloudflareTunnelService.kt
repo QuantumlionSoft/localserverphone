@@ -25,7 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 class CloudflareTunnelService @Inject constructor(
     private val settingsStore: CloudflareSettingsStore,
     private val api: CloudflareApiClient,
-    @param:ApplicationScope applicationScope: CoroutineScope,
+    @ApplicationScope applicationScope: CoroutineScope,
 ) : CloudflareTunnelProvider {
     private val operations = Mutex()
     private val mutableConnection = MutableStateFlow(CloudflareConnectionState())
