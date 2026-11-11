@@ -6,6 +6,7 @@ import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import dev.pocketpaas.data.local.PocketPaaSDatabase
 import dev.pocketpaas.data.local.PlatformFeatureSchemas
+import dev.pocketpaas.data.local.CustomHostnameSchema
 import dev.pocketpaas.data.local.SiteDao
 import dev.pocketpaas.data.local.SiteEntity
 import dev.pocketpaas.data.local.SiteSchema
@@ -169,7 +170,7 @@ class RoomSqlVerificationTest {
         val database = Room.databaseBuilder<PocketPaaSDatabase>(file.absolutePath)
             .setDriver(driver)
             .setQueryCoroutineContext(Dispatchers.IO)
-            .addMigrations(migration, publicUrlMigration(), featureSchemaMigration())
+            .addMigrations(migration, publicUrlMigration(), featureSchemaMigration(), customHostnameMigration())
             .build()
         databases += database
 
@@ -196,7 +197,7 @@ class RoomSqlVerificationTest {
         } finally { old.close() }
         val database = Room.databaseBuilder<PocketPaaSDatabase>(file.absolutePath)
             .setDriver(driver).setQueryCoroutineContext(Dispatchers.IO)
-            .addMigrations(publicUrlMigration(), featureSchemaMigration()).build().also(databases::add)
+            .addMigrations(publicUrlMigration(), featureSchemaMigration(), customHostnameMigration()).build().also(databases::add)
         assertEquals("v2-id", database.platformSettingsDao().getSettings()?.installationId)
         assertEquals(77L, database.platformSettingsDao().getSettings()?.createdAtEpochMillis)
         assertNull(database.platformSettingsDao().observePublicUrl().first())
@@ -233,6 +234,12 @@ class RoomSqlVerificationTest {
     private fun featureSchemaMigration(): Migration = object : Migration(3, 4) {
         override fun migrate(connection: SQLiteConnection) {
             PlatformFeatureSchemas.statements.forEach { sql -> connection.execute(sql) }
+        }
+    }
+
+    private fun customHostnameMigration(): Migration = object : Migration(4, 5) {
+        override fun migrate(connection: SQLiteConnection) {
+            CustomHostnameSchema.statements.forEach { sql -> connection.execute(sql) }
         }
     }
 

@@ -7,4 +7,8 @@ interface RuntimeFileStore {
     suspend fun delete(path: String)
     suspend fun ensureDirectory(path: String)
     suspend fun listFiles(directory: String): List<String>
+
+    suspend fun listEntries(directory: String): List<RuntimeFileEntry> = listFiles(directory).map { path ->
+        RuntimeFileEntry(path.substringAfterLast('/'), isDirectory = false, sizeBytes = null)
+    }
 }

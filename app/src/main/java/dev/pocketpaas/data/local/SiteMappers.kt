@@ -12,4 +12,5 @@ fun SiteEntity.toDomain(): Site = Site(
     status = status,
     logs = logs,
     createdAt = createdAt,
+    customHostname = customHostname,
 )

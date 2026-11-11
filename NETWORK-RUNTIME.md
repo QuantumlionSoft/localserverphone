@@ -1,6 +1,6 @@
 # Nginx ve Cloudflare yönetim motoru
 
-`NetworkManager`, Hilt singleton olarak süreç motoru, runtime dosya deposu ve Room repository'lerine bağlıdır. Uzun ömürlü Nginx ve cloudflared süreçlerini sahip olduğu `ManagedProcess` nesneleriyle izler. Faz 4'te oluşturulan motor güncel uygulamada ZIP deployment, Foreground Service ve Dashboard ile bağlıdır. Bu belge 0.4.0 çalışma sözleşmesini anlatır; tarihsel Faz 4 raporu değiştirilmez.
+`NetworkManager`, Hilt singleton olarak süreç motoru, runtime dosya deposu, deployment workspace'i ve Room repository'lerine bağlıdır. Uzun ömürlü Nginx ve cloudflared süreçlerini sahip olduğu `ManagedProcess` nesneleriyle izler. Güncel çalışma ağacı Quick Tunnel'ı korur ve Cloudflare ayarları doğrulandığında custom hostname varsa PocketPaaS-managed Named Tunnel'a geçer. Aşağıdaki davranışlar kod sözleşmesidir; gerçek Android/Termux doğrulaması ayrıca gerekir.
 
 ## Termux hazırlığı
 
@@ -27,8 +27,10 @@ Varsayılan çalışma ağacı agent tarafından `$HOME/.pocket-paas` altında o
 htdocs/<canonical-domain>/
 nginx/nginx.conf
 nginx/conf.d/<canonical-domain>.conf
+nginx/conf.d/custom/<canonical-domain>.conf
 runtime/nginx.pid
 runtime/cloudflared-quick.yml
+runtime/cloudflared-named.token
 runtime/{client-body,proxy-temp,fastcgi-temp,uwsgi-temp,scgi-temp}/
 logs/nginx-access.log
 logs/nginx-error.log
@@ -41,14 +43,14 @@ Runtime dizini `ProcessExecutor.runtimeLayout()` ile alınır. APK içindeki `fi
 | Çağrı | Davranış |
 |---|---|
 | `startNginx()` | Config'i test eder, sahip olunan Nginx'i başlatır ve HTTP readiness bekler. |
-| `startCloudflareTunnel()` / `startAll()` | Önce Nginx, ardından Quick Tunnel başlatır ve doğrulanmış public URL'yi kaydeder. |
+| `startCloudflareTunnel()` / `startAll()` | Önce Nginx'i başlatır; atanmış custom hostname varsa Cloudflare Named Tunnel, yoksa Quick Tunnel çalıştırır ve doğrulanmış public URL'yi kaydeder. |
 | `stopCloudflareTunnel()` | Tüneli durdurur, main/site public URL'lerini temizler; Nginx kalır. |
 | `stopNginx()` / `stopAll()` | Tüneli ve Nginx'i durdurur. |
-| `generateVirtualHost(site, rootDir)` | Kayıtlı site için aday config'i test eder, uygular ve çalışan Nginx'i reload eder. |
+| `generateVirtualHost(site, rootDir)` | Kayıtlı site için path ve varsa custom-host config adaylarını birlikte test eder, uygular ve çalışan Nginx'i reload eder. |
 | `state` | `StateFlow<NetworkState>`; iki servisin durumu, PID'leri, URL ve son hata. |
 | `logs` | İki servisin stdout/stderr olaylarını yayınlayan sınırlı `SharedFlow<ProcessOutput>`. |
 
-`generateVirtualHost` hem domain `Site` hem Room `SiteEntity` kabul eder. Site önce repository'de bulunmalıdır. ID, canonical domain ve internal port config değişikliğinin öncesinde/sonrasında DB ile karşılaştırılır. Ana URL `ServerStateRepository.publicUrl`, site URL'leri `SiteRepository.sites` üzerinden gözlenebilir. Room v3 `2→3` migration ana URL'yi nullable ekler; mevcut kurulum kimliği, siteler ve loglar korunur.
+`generateVirtualHost` hem domain `Site` hem Room `SiteEntity` kabul eder. Site önce repository'de bulunmalıdır. ID, canonical domain, custom hostname ve internal port config değişikliğinin öncesinde/sonrasında DB ile karşılaştırılır. `setCustomHostname(siteId, hostname)` ayrı `customHostname` alanını yönetir; `domainName` ve `/sites/<domainName>/` yolu değişmez. Ana URL `ServerStateRepository.publicUrl`, site URL'leri `SiteRepository.sites` üzerinden gözlenebilir. Room v5 `4→5` migration nullable custom hostname ve unique index ekler; mevcut site/kurulum verisi korunur.
 
 Aşağıdaki suspend yardımcı, DB'de mevcut bir sitenin önceden hazırlanmış Termux dizinini sunar; ZIP dağıtımı gerçekleştirmez:
 
@@ -75,12 +77,14 @@ STATIC root'u hazırlanmış HTML dizini, REACT root'u hazırlanmış build dizi
 
 Nginx **127.0.0.1:8081**, dahili process agent **127.0.0.1:8766**, cloudflared metrics **127.0.0.1:8767** kullanır. Faz 6 yönetim API'si için **127.0.0.1:8080** ayrılmıştır. Rootsuz seçime uygun olarak ayrıcalıklı port 80 kullanılmaz.
 
-Tek ana Nginx `server` bloğu, `conf.d/*.conf` location parçalarını içerir. `domainName` bu modda routing kimliğidir; DNS kaydı oluşturulmaz. Örnek site `example.com` için adres:
+Ana Nginx `server` bloğu, `conf.d/*.conf` path location'larını içerir. `domainName` proje/path kimliğidir; tek başına DNS kaydı değildir. Örnek:
 
 ```text
-http://127.0.0.1:8081/sites/example.com/
-https://<assigned-name>.trycloudflare.com/sites/example.com/
+http://127.0.0.1:8081/sites/my-app/
+https://<assigned-name>.trycloudflare.com/sites/my-app/
 ```
+
+Her `customHostname` için ayrı `nginx/conf.d/custom/<domainName>.conf` server'ı üretilir. Bu exact-host server projeyi `/` kökünde sunar; statik/React root ya da Node/Django backend portuna yönlendirir. Örneğin `domainName = my-app`, `customHostname = www.example.com` ise public adres `https://www.example.com/` olurken `/sites/my-app/` iç route'u da korunur. Custom-host server yönetim API'si veya web dosya yöneticisi rotalarını içermez.
 
 Son slash eksikse 308 yönlendirmesi query parametrelerini korur. STATIC dosyaları `alias` ile sunulur; dizin listesi kapalıdır, gizli dosyalar 403 döner ve POSIX Nginx'te symlink takibi kapatılır. REACT, bulunamayan client route'larını `index.html` üzerinden sunar; giriş dosyası yoksa sonsuz yönlendirme yerine 404 verir. React derleme base/public path ve router basename'i `/sites/example.com/` ile uyumlu olmalıdır.
 
@@ -90,7 +94,7 @@ DJANGO/NODEJS için `proxy_pass http://127.0.0.1:<internalPort>/` routing prefix
 
 Domain ve dosya yolları canonical/normalize edilmelidir. Config metni ekleyebilen karakterler, traversal, sibling proje root'u, platform port çakışması ve kayıtlı olmayan site reddedilir. Varsayılan en fazla 64 virtual host'tur.
 
-Yeni host ve main config önce ayrı aday dosyalara yazılır. Gerçek `nginx -p <runtime-root>/ -c <candidate> -t` başarılı olmadan aktif dosyalar değiştirilmez. Uygulama atomik dosya değişimi ve `nginx -s reload` sonrası `/_pocketpaas/health` yanıtındaki yeni revision'ı bekler. Eski Nginx worker'ın 200 cevabı tek başına başarı sayılmaz. Hata durumunda önceki host/main içerikleri geri yüklenir, tekrar test/reload edilir ve eski revision doğrulanır. Rollback başarısızsa servisler durdurulmaya çalışılır ve hata yayınlanır.
+Path-host, custom-host ve main config aday dosyalara yazılır. Gerçek `nginx -p <runtime-root>/ -c <candidate> -t` başarılı olmadan aktif dosyalar değiştirilmez. Uygulama atomik dosya değişimi ve `nginx -s reload` sonrası `/_pocketpaas/health` yanıtındaki yeni revision'ı bekler. Eski Nginx worker'ın 200 cevabı tek başına başarı sayılmaz. Hata durumunda önceki path/custom-host/main içerikleri geri yüklenir, tekrar test/reload edilir ve eski revision doğrulanır. Rollback başarısızsa servisler durdurulmaya çalışılır ve hata yayınlanır.
 
 Nginx `daemon off;` ile sahip olunan process olarak çalışır. Başlatma/durdurma/config işlemleri `Mutex` ile sıraya alınır. Eski process watcher'ları yeni oturumun state'ini değiştiremez. Kalıcı PID'ler yeni uygulama oturumunda process sahipliği kanıtı sayılmaz; rastgele PID öldürme veya çalışan eski süreci otomatik devralma yapılmaz. Durdurma doğrulanamazsa `FAILED` ve sahiplik referansı korunur; işlem başarılı durdurulmuş gibi gösterilmez. Agent lease'i terk edilen süreçleri temizlemeyi sınırlar.
 
@@ -104,7 +108,23 @@ Sekiz process slot'u kısa komutlar ve uzun ömürlü süreçler arasında ortak
 
 Nginx access/error logları yukarıdaki dosyalara gider; `NetworkManager.logs` process stdout/stderr akışını verir. UI dosya loglarını otomatik tail etmez. Canlı flow tamponu sınırlıdır; yavaş tüketicide eski olaylar düşebilir.
 
-## Cloudflare readiness ve public URL
+## Cloudflare Quick/Named Tunnel ve public URL
+
+Cloudflare'ı Dashboard'daki **Özel alan adları** kartından bağlayın. API token'ı şu least-privilege izinleriyle oluşturun: hesabınızda **Cloudflare Tunnel Write** (alternatif olarak **Cloudflare One Connectors Write** veya **Cloudflare One Connector: cloudflared Write**), seçili zone'da **Zone: Read**, **DNS: Edit** ve **DNS: Read**. UI'ya Account ID ve zone adı girilir; token verify endpoint'i ve aynı hesaba ait aktif zone Cloudflare API üzerinden doğrulanır. `domainName` bu işlemde DNS hostname olarak kullanılmaz.
+
+Cloudflare API tokenı, remote Tunnel run tokenı ve managed-hostname intent'i Android Keystore AES-GCM anahtarıyla şifrelenen `noBackupFilesDir/cloudflare-settings.bin` içinde tutulur. API client yalnız sabit HTTPS `api.cloudflare.com` origin'ine gider, redirect izlemez, response boyutunu sınırlar ve yönetim tokenını URL'ye koymaz. Yedek/export bu sırları içermez. `config_src=cloudflare` Named Tunnel için run tokenı Cloudflare token endpoint'inden alınır; Termux runtime'a mode-0600 `cloudflared-named.token` dosyasıyla geçilir ve `cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:8767 run --token-file` kullanılır (cloudflared 2025.4.0+). Tunnel ingress Cloudflare'da tutulduğundan yerel credentials/config dosyası gerekmez. Tunnel normal biçimde durdurulunca ve Quick mode başlatılmadan önce token dosyası silinir. Android/Termux zorla kapatılırsa dosya sonraki ağ başlangıcına kadar kalabilir. Bu runtime dosyası Termux UID'si altında çalıştığından aynı UID'deki programlara karşı ayrı bir güvenlik sınırı değildir.
+
+Cloudflare bağlantısı doğrulandıktan sonra site kartındaki **Özel public hostname** alanından zone içi bir hostname atayın (ör. `www.example.com`). Host canonical DNS formatında olmalı, yapılandırılmış zone içinde kalmalı ve başka siteye atanmış olmamalıdır. Uygulama app-managed Named Tunnel oluşturur/yeniden kullanır, remote ingress'e exact hostname → `http://127.0.0.1:8081` rotası ve son kural olarak `http_status:404` yazar; DNS'te proxied CNAME'i `<tunnel-id>.cfargotunnel.com` hedefine ayarlar.
+
+Tunnel ingress ve DNS reconciliation idempotent'tir. Aynı hostname üzerinde A/AAAA/CNAME çatışması varsa mevcut kayıt sessizce ezilmez; hata gösterilir. Kaldırma yalnız PocketPaaS'in daha önce yönettiği hostname'leri ele alır ve CNAME hâlâ bu Tunnel'ın hedefini gösteriyorsa siler. API hatasında `managedHostnames` pending isteğin önceki+istenen birleşimi olarak şifreli depoda tutulur; sonraki deneme kayıp yanıt sonrası oluşan kayıtları uzlaştırabilir. Account/zone kapsamı değiştirilmeden önce özel hostname'ler kaldırılmalı ve mevcut uygulama Tunnel'ı disconnect onayıyla silinmelidir.
+
+Site custom hostname'i varsa `startAll()` Named Tunnel başlatır; yoksa Quick Tunnel geriye dönük varsayılan olarak kalır. Named Tunnel cloudflared komutu:
+
+```text
+cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:8767 run --token-file <runtime>/cloudflared-named.token
+```
+
+Cloudflare API'den alınan remote Tunnel tokenı `--token-file` ile cloudflared'a verilir; token komut satırına yazılmaz. Tunnel ingress Cloudflare'da yönetildiğinden yerel YAML config gerekmez ve Quick Tunnel `--url` kullanılmaz. Named readiness metrics `/ready` ve sahip olunan process ile doğrulanır. Public platform URL'si `https://<ilk-hostname>`, her site URL'si ise kendi `https://<customHostname>/` köküdür. Son hostname kaldırılırsa ingress 404'e alınır, yalnız app'in yönettiği uygun DNS kayıtları temizlenir ve çalışan tunnel Quick moda döner. `domainName`/`/sites/<domainName>/` route'u yerel ve Quick modda çalışmaya devam eder.
 
 Quick Tunnel, kullanıcı global config'ini kullanmamak için boş, uygulamaya ait config ile başlatılır:
 
@@ -112,16 +132,11 @@ Quick Tunnel, kullanıcı global config'ini kullanmamak için boş, uygulamaya a
 cloudflared tunnel --config <runtime>/cloudflared-quick.yml --no-autoupdate --url http://127.0.0.1:8081 --metrics 127.0.0.1:8767
 ```
 
-Stdout ve stderr ayrı IO okuyucularından canlı izlenir. Parser Quick Tunnel oluşturma banner'ından sonra, parçalanmış logları da birleştirerek `https://[a-zA-Z0-9-]+\.trycloudflare\.com` adresini yakalar. Yanlış suffix, API endpoint'i ve tamamlanmamış URL reddedilir. Adresin logda görünmesi yeterli değildir: metrics `/ready` 200 dönmeli, `/quicktunnel` hostname'i logdaki hostname ile eşleşmeli ve sahip olunan process çalışıyor olmalıdır.
+Stdout ve stderr ayrı IO okuyucularından canlı izlenir. Quick parser banner sonrasında parçalanmış logları da birleştirerek `https://[a-zA-Z0-9-]+\.trycloudflare\.com` adresini yakalar. Yanlış suffix ve tamamlanmamış URL reddedilir. Adresin logda görünmesi yeterli değildir: metrics `/ready` 200 dönmeli, `/quicktunnel` hostname'i logdaki hostname ile eşleşmeli ve process çalışıyor olmalıdır. Named modda URL parser kullanılmaz; sabit hostname için edge readiness kontrol edilir.
 
-Başlangıç timeout'ları varsayılan Nginx 15 saniye, tünel 60 saniye, config testi 10 saniyedir. Ağ motorunun kendi readiness süresi aşılırsa `ProcessIOException`, `FAILED` ve anlamlı `lastError` üretilir: Nginx mesajı portu/süreyi, Cloudflare mesajı URL atanması ile edge readiness aşamasını ayırır. Bu hata sessiz `STOPPED` sayılmaz. Dış coroutine iptali ayrı kalır; iptal temizliği doğrulanırsa `STOPPED`, doğrulanamazsa `FAILED` ve sahiplik korunur.
+Başlangıç timeout'ları varsayılan Nginx 15 saniye, tünel 60 saniye, config testi 10 saniyedir. Ağ motorunun kendi readiness süresi aşılırsa `ProcessIOException`, `FAILED` ve anlamlı `lastError` üretilir. Bu hata sessiz `STOPPED` sayılmaz. Dış coroutine iptali ayrı kalır; iptal temizliği doğrulanırsa `STOPPED`, doğrulanamazsa `FAILED` ve sahiplik korunur. Canlı sağlık her iki saniyede kontrol edilir; edge bağlantısı kaybolursa public URL'ler temizlenir ve aynı process yeniden hazır olduğunda yayınlanır. Nginx kaybı tüneli de durdurur. Bu local readiness kontrolü internette uçtan uca istek doğrulaması değildir.
 
-Canlı sağlık her iki saniyede kontrol edilir. Çalışan tünel edge bağlantısını kaybederse durum `STARTING` olur ve kalıcı public URL'ler temizlenir; aynı oturum tekrar hazırsa yeniden yayınlanır. Process exit veya kalıcı güncelleme hatası `FAILED` üretir. Nginx kaybı tüneli de durdurur. Sadece config'i bulunan sitelere `/sites/<domain>/` URL'si atanır. Bu local readiness kontrolü internette uçtan uca istek doğrulaması değildir.
-
-İstenen Quick Tunnel modu geçici adres üretir. Cloudflare bunu geliştirme/test için tanımlar, uptime garantisi vermez; 200 eşzamanlı istek sınırı ve SSE kısıtı vardır. Kalıcı production adresi için hesap/DNS ile named tunnel entegrasyonu gerekir. Bu faz Quick Tunnel uygular. [Cloudflare resmi Quick Tunnels belgesi](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
-
-`RemoteServerService` görünür bildirim altında sunucu, tünel ve projelerin yaşam döngüsünü yönetir; Dashboard Master Switch bu servisi çağırır. Panel üstünde sürüm görünür, hata metinleri seçilip kopyalanabilir. Android/OEM uygulamayı yine de öldürebilir. WorkManager kalıcı web sunucusu yaşam döngüsü sağlamaz. Fiziksel Android/Termux ve dış Cloudflare bağlantısı cihazda doğrulanmadı; güncel sonuçlar [RUNTIME-FIX-VALIDATION.md](RUNTIME-FIX-VALIDATION.md), tarihsel Faz 7 raporu [PHASE-7-VALIDATION.md](PHASE-7-VALIDATION.md) içindedir.
-
+Named custom-host server yalnız ilgili siteyi yayınlar; yönetim API'si ve web dosya yöneticisi bu hostname'e eklenmez. Dosya yöneticisi Quick Tunnel'da `/manage/`, LAN modunda API listener üzerinden kullanılabilir. Quick Tunnel geçici geliştirme/test adresidir; uptime garantisi, 200 eşzamanlı istek üstü veya SSE desteği sağlamaz. [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
 ## Resmi sözleşmeler
 
 - [Nginx komut seçenekleri ve config testi](https://nginx.org/en/docs/switches.html)

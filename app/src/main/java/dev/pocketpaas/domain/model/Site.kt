@@ -24,6 +24,8 @@ data class Site(
     val status: SiteStatus,
     val logs: String,
     val createdAt: Long,
+    /** Optional public DNS hostname. domainName remains the independent /sites/<domainName>/ identity. */
+    val customHostname: String? = null,
 )
 
 sealed interface SiteCollectionState {

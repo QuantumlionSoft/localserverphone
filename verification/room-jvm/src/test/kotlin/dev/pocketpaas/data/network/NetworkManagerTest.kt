@@ -10,6 +10,14 @@ import dev.pocketpaas.domain.model.RuntimeLayout
 import dev.pocketpaas.domain.model.Site
 import dev.pocketpaas.domain.model.SiteCollectionState
 import dev.pocketpaas.domain.model.SiteStatus
+import dev.pocketpaas.domain.model.TunnelMode
+import dev.pocketpaas.domain.deployment.DeploymentWorkspace
+import dev.pocketpaas.domain.deployment.PreparedProject
+import dev.pocketpaas.domain.deployment.ProjectEntryPoint
+import dev.pocketpaas.domain.deployment.ProjectMetadata
+import dev.pocketpaas.domain.network.CloudflareConnectionState
+import dev.pocketpaas.domain.network.CloudflareTunnelProvider
+import dev.pocketpaas.domain.network.NamedTunnelCredentials
 import dev.pocketpaas.domain.process.ManagedProcess
 import dev.pocketpaas.domain.process.ProcessCommand
 import dev.pocketpaas.domain.process.ProcessExecutor
@@ -107,6 +115,123 @@ class NetworkManagerTest {
             assertEquals(1, processes.tunnel!!.stopCalls.get())
             assertNull(serverState.publicUrl.value)
             assertNull(sites.getSite(1)?.publicUrl)
+        }
+    }
+
+    @Test
+    fun namedTunnelPublishesTheCustomHostnameAtTheSiteRoot() = runBlocking {
+        fixture {
+            cloudflare.configure("api-token", ACCOUNT_ID, "example.com")
+            val site = sites.getSite(1)!!.copy(customHostname = "www.example.com")
+            sites.updateCustomHostname(site.id, site.customHostname)
+            manager.generateVirtualHost(site, "$ROOT/htdocs/${site.domainName}")
+
+            manager.startAll()
+
+            assertNotNull(files.readTextOrNull(builder.customHostPath(layout, site)))
+            assertEquals("eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg=", files.readTextOrNull("${layout.runtimePath}/cloudflared-named.token"))
+            assertEquals(TunnelMode.NAMED, manager.state.value.tunnelMode)
+            assertEquals("https://www.example.com", manager.state.value.publicUrl)
+            assertEquals("https://www.example.com/", sites.getSite(1)?.publicUrl)
+            assertTrue(processes.lastTunnelArguments.contains("run"))
+            val tokenFileIndex = processes.lastTunnelArguments.indexOf("--token-file")
+            assertTrue(tokenFileIndex >= 0)
+            assertEquals("${layout.runtimePath}/cloudflared-named.token", processes.lastTunnelArguments[tokenFileIndex + 1])
+            assertFalse(processes.lastTunnelArguments.contains("--config"))
+            assertFalse(processes.lastTunnelArguments.contains("--url"))
+            assertFalse(processes.lastTunnelArguments.any { it.contains("eHh4eHh4") })
+            assertEquals(0, hostnameProbeCount.get())
+        }
+    }
+
+    @Test
+    fun stoppingNamedTunnelDeletesTheTemporaryRunToken() = runBlocking {
+        fixture {
+            cloudflare.configure("api-token", ACCOUNT_ID, "example.com")
+            val site = sites.getSite(1)!!.copy(customHostname = "www.example.com")
+            sites.updateCustomHostname(site.id, site.customHostname)
+            manager.generateVirtualHost(site, "$ROOT/htdocs/${site.domainName}")
+
+            manager.startAll()
+            assertNotNull(files.readTextOrNull("${layout.runtimePath}/cloudflared-named.token"))
+
+            manager.stopAll()
+
+            assertNull(files.readTextOrNull("${layout.runtimePath}/cloudflared-named.token"))
+            assertEquals(NetworkServiceStatus.STOPPED, manager.state.value.tunnelStatus)
+        }
+    }
+
+    @Test
+    fun failedNamedTunnelProcessStartRemovesTemporaryCredentials() = runBlocking {
+        fixture {
+            cloudflare.configure("api-token", ACCOUNT_ID, "example.com")
+            val site = sites.getSite(1)!!.copy(customHostname = "www.example.com")
+            sites.updateCustomHostname(site.id, site.customHostname)
+            manager.generateVirtualHost(site, "$ROOT/htdocs/${site.domainName}")
+            processes.failNextTunnelStart = true
+
+            expectFailure { manager.startAll() }
+
+            assertNull(files.readTextOrNull("${layout.runtimePath}/cloudflared-named.token"))
+            assertNull(files.readTextOrNull("${layout.runtimePath}/cloudflared-named.yml"))
+            assertNull(files.readTextOrNull("${layout.runtimePath}/cloudflared-named.json"))
+            assertEquals(NetworkServiceStatus.RUNNING, manager.state.value.nginxStatus)
+            assertEquals(NetworkServiceStatus.FAILED, manager.state.value.tunnelStatus)
+        }
+    }
+
+    @Test
+    fun quickTunnelStartupRemovesNamedCredentialsLeftByAnEarlierProcess() = runBlocking {
+        fixture {
+            files.writeTextAtomic("${layout.runtimePath}/cloudflared-named.token", "stale token")
+            files.writeTextAtomic("${layout.runtimePath}/cloudflared-named.json", "stale legacy credentials")
+            files.writeTextAtomic("${layout.runtimePath}/cloudflared-named.yml", "stale configuration")
+
+            manager.startAll()
+
+            assertNull(files.readTextOrNull("${layout.runtimePath}/cloudflared-named.token"))
+            assertNull(files.readTextOrNull("${layout.runtimePath}/cloudflared-named.json"))
+            assertNull(files.readTextOrNull("${layout.runtimePath}/cloudflared-named.yml"))
+            assertEquals(TunnelMode.QUICK, manager.state.value.tunnelMode)
+        }
+    }
+
+    @Test
+    fun liveQuickTunnelSwitchesToNamedAndReturnsToQuickWhenLastHostnameIsRemoved() = runBlocking {
+        fixture {
+            manager.startAll()
+            val quick = processes.tunnel!!
+            cloudflare.configure("api-token", ACCOUNT_ID, "example.com")
+
+            manager.setCustomHostname(1, "www.example.com")
+
+            val named = processes.tunnel!!
+            assertFalse(quick.isAlive)
+            assertTrue(named.isAlive)
+            assertEquals(TunnelMode.NAMED, manager.state.value.tunnelMode)
+            assertEquals("https://www.example.com/", sites.getSite(1)?.publicUrl)
+            assertNotNull(files.readTextOrNull(builder.customHostPath(layout, sites.getSite(1)!!)))
+
+            manager.setCustomHostname(1, null)
+
+            assertFalse(named.isAlive)
+            assertEquals(TunnelMode.QUICK, manager.state.value.tunnelMode)
+            assertEquals("$PUBLIC_URL/sites/example.com/", sites.getSite(1)?.publicUrl)
+            assertNull(files.readTextOrNull(builder.customHostPath(layout, sites.getSite(1)!!)))
+            assertEquals(3, processes.tunnelStarts.get())
+        }
+    }
+
+    @Test
+    fun customHostnameMustBelongToConfiguredZoneBeforePersistence() = runBlocking {
+        fixture {
+            manager.startAll()
+            cloudflare.configure("api-token", ACCOUNT_ID, "example.com")
+            val failure = expectFailure { manager.setCustomHostname(1, "outside.test") }
+            assertTrue(failure.message.orEmpty().contains("configured Cloudflare zone"))
+            assertNull(sites.getSite(1)?.customHostname)
+            assertNull(files.readTextOrNull(builder.customHostPath(layout, sites.getSite(1)!!)))
         }
     }
 
@@ -518,7 +643,9 @@ class NetworkManagerTest {
         )
         val builder = NginxConfigBuilder(config)
         val processes = FakeProcessExecutor(layout, files, healthMarker)
-        val manager = NetworkManager(processes, files, builder, serverState, sites, config, policy, scope)
+        val cloudflare = FakeCloudflareTunnelProvider()
+        val workspace = MemoryDeploymentWorkspace(layout)
+        val manager = NetworkManager(processes, files, builder, serverState, sites, config, policy, cloudflare, workspace, scope)
 
         init {
             files.contents[builder.hostPath(layout, sites.sites.value.first())] = builder.renderVirtualHost(
@@ -573,6 +700,8 @@ class NetworkManagerTest {
         @Volatile var failNextConfigTest = false
         @Volatile var ignoreNextReload = false
         @Volatile var automaticTunnelBanner = true
+        @Volatile var failNextTunnelStart = false
+        @Volatile var lastTunnelArguments: List<String> = emptyList()
         @Volatile var nginx: FakeManagedProcess? = null
         @Volatile var tunnel: FakeManagedProcess? = null
 
@@ -613,10 +742,17 @@ class NetworkManagerTest {
                     updateHealthMarker(arguments[arguments.indexOf("-c") + 1])
                     nginx = it
                 }
-                "/runtime/bin/cloudflared" -> FakeManagedProcess(ids.incrementAndGet()).also {
-                    tunnelStarts.incrementAndGet()
-                    tunnel = it
-                    if (automaticTunnelBanner) it.emit(ProcessStream.STDERR, "Your quick Tunnel has been created\n$PUBLIC_URL |\n")
+                "/runtime/bin/cloudflared" -> {
+                    if (failNextTunnelStart) {
+                        failNextTunnelStart = false
+                        throw IOException("Simulated cloudflared process start failure")
+                    }
+                    FakeManagedProcess(ids.incrementAndGet()).also {
+                        lastTunnelArguments = arguments
+                        tunnelStarts.incrementAndGet()
+                        tunnel = it
+                        if (automaticTunnelBanner) it.emit(ProcessStream.STDERR, "Your quick Tunnel has been created\n$PUBLIC_URL |\n")
+                    }
                 }
                 else -> error("Unexpected executable")
             }
@@ -669,6 +805,56 @@ class NetworkManagerTest {
 
         fun emit(stream: ProcessStream, text: String) {
             check(mutableLogs.tryEmit(ProcessOutput(sessionId, stream, text, sequence.incrementAndGet(), System.currentTimeMillis())))
+        }
+    }
+
+    private class FakeCloudflareTunnelProvider : CloudflareTunnelProvider {
+        private val mutableConnection = MutableStateFlow(CloudflareConnectionState())
+        override val connectionState: StateFlow<CloudflareConnectionState> = mutableConnection
+        val reconciledHostnames = CopyOnWriteArrayList<Set<String>>()
+
+        override suspend fun configure(apiToken: String, accountId: String, zoneName: String): CloudflareConnectionState {
+            require(apiToken.isNotBlank())
+            return CloudflareConnectionState(true, accountId, zoneName).also { mutableConnection.value = it }
+        }
+
+        override suspend fun disconnect() {
+            mutableConnection.value = CloudflareConnectionState()
+        }
+
+        override suspend fun prepare(sites: List<Site>, origin: String): NamedTunnelCredentials {
+            check(sites.any { it.customHostname != null })
+            check(origin.startsWith("http://127.0.0.1:"))
+            val accountId = checkNotNull(mutableConnection.value.accountId)
+            return NamedTunnelCredentials(
+                accountId = accountId,
+                tunnelId = TUNNEL_ID,
+                tunnelName = "pocketpaas-abcdef123456",
+                tunnelToken = "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg=",
+            )
+        }
+
+        override suspend fun reconcile(sites: List<Site>, origin: String) {
+            check(origin.startsWith("http://127.0.0.1:"))
+            reconciledHostnames += sites.mapNotNull { it.customHostname }.toSet()
+        }
+    }
+
+    private class MemoryDeploymentWorkspace(private val layout: RuntimeLayout) : DeploymentWorkspace {
+        override suspend fun prepare(site: Site, archivePath: String, deploymentId: String): PreparedProject = error("Not used")
+        override suspend fun activate(site: Site, prepared: PreparedProject) = Unit
+        override suspend fun rollback(site: Site, prepared: PreparedProject) = Unit
+        override suspend fun abort(site: Site, deploymentId: String) = Unit
+        override suspend fun complete(site: Site, prepared: PreparedProject) = Unit
+        override suspend fun inspect(site: Site): ProjectMetadata {
+            val entry = when (site.projectType) {
+                ProjectType.STATIC -> ProjectEntryPoint.STATIC
+                ProjectType.REACT -> ProjectEntryPoint.REACT
+                ProjectType.NODEJS -> ProjectEntryPoint.NODEJS
+                ProjectType.DJANGO -> ProjectEntryPoint.DJANGO
+            }
+            val root = "${layout.projectsPath}/${site.domainName}"
+            return ProjectMetadata(if (site.projectType == ProjectType.REACT) "$root/dist" else root, entry, true, true)
         }
     }
 
@@ -725,6 +911,9 @@ class NetworkManagerTest {
             return true
         }
         override suspend fun updatePublicUrl(id: Long, publicUrl: String?) { update(id) { it.copy(publicUrl = publicUrl) } }
+        override suspend fun updateCustomHostname(id: Long, customHostname: String?) {
+            update(id) { it.copy(customHostname = customHostname) }
+        }
         override suspend fun appendLogs(id: Long, text: String) { update(id) { it.copy(logs = it.logs + text) } }
         override suspend fun clearLogs(id: Long) { update(id) { it.copy(logs = "") } }
         override suspend fun deleteSiteIfInactive(id: Long) {

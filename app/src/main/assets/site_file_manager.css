@@ -1,0 +1,33 @@
+* { box-sizing: border-box; }
+:root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+body { margin: 0; background: #10151d; color: #eef3fa; }
+main { width: min(100% - 2rem, 880px); margin: 2rem auto; }
+header { margin-bottom: 1.25rem; }
+h1, h2, p { margin-top: 0; }
+h1 { margin-bottom: .35rem; font-size: clamp(1.6rem, 4vw, 2.4rem); }
+h2 { margin-bottom: .6rem; font-size: 1.15rem; }
+.eyebrow { margin-bottom: .4rem; color: #8ea9ff; font-weight: 700; letter-spacing: .14em; }
+.muted { color: #b6c2d1; }
+.card { padding: 1.25rem; border: 1px solid #354153; border-radius: 1rem; background: #1a2330; }
+label { display: block; margin-bottom: .35rem; font-weight: 650; }
+input, select, textarea { width: 100%; padding: .75rem; border: 1px solid #56647a; border-radius: .55rem; background: #0f1722; color: inherit; font: inherit; }
+button { min-height: 2.7rem; padding: .6rem .9rem; border: 0; border-radius: .55rem; background: #8ea9ff; color: #10151d; font: inherit; font-weight: 700; cursor: pointer; }
+button:disabled { cursor: wait; opacity: .55; }
+button.secondary { border: 1px solid #56647a; background: transparent; color: inherit; }
+button.danger { background: #e58a96; }
+form { display: grid; gap: .65rem; }
+.toolbar { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; margin-bottom: .85rem; }
+.toolbar label { width: auto; margin: 0; }
+.toolbar select { flex: 1 1 12rem; width: auto; }
+.toolbar h2 { flex: 1; margin: 0; overflow-wrap: anywhere; }
+.pathbar { margin-top: 1rem; }
+.path { flex: 1; min-width: 10rem; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+#message, #login-message { min-height: 1.5rem; color: #a8d6b6; }
+#message.error, #login-message.error { color: #ffabb3; }
+#entries { display: grid; gap: .45rem; margin: 0; padding: 0; list-style: none; }
+.entry { display: flex; align-items: center; gap: .75rem; padding: .7rem .8rem; border: 1px solid #354153; border-radius: .55rem; }
+.entry button { flex: 1; padding: .2rem 0; text-align: left; background: transparent; color: inherit; font-weight: 600; overflow-wrap: anywhere; }
+.entry small { color: #b6c2d1; white-space: nowrap; }
+.editor { margin-top: 1.25rem; }
+textarea { min-height: 18rem; resize: vertical; font-family: ui-monospace, monospace; tab-size: 2; }
+@media (max-width: 560px) { main { width: min(100% - 1rem, 880px); margin: .6rem auto; } .card { padding: .85rem; } .pathbar button { flex: 1 1 auto; } }

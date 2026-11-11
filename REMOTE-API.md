@@ -10,7 +10,26 @@ Her `/api` isteği **Authorization: Bearer <64 küçük harf hex karakter>** ger
 
 Doğrulama gövde okunmadan, özel upload dosyası oluşturulmadan ve deployment başlatılmadan yapılır. Token karşılaştırması `MessageDigest.isEqual` kullanır. Yanıtlar `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` ve `Connection: close` taşır. Hatalar sınırlı kodlarla döner; ham exception, dosya yolu ve credential mesajları istemciye taşınmaz. İstek loglama eklentisi kurulmaz.
 
-API HTTP kullanır. LAN seçeneği token'ı ağ üzerinde şifrelemez; yalnız güvenilen özel ağ/VPN üzerinde kullanın. Güvenli varsayılan, loopback ve USB `adb forward tcp:8080 tcp:8080` erişimidir. Cloudflare Quick Tunnel mevcut **Nginx:8081** origin'ini yayınlar; yönetim API'sini yayınlamaz. Bu fazda API TLS sonlandırması veya internete açık yönetim tüneli yoktur.
+API HTTP kullanır. Güvenli varsayılan loopback ve USB `adb forward tcp:8080 tcp:8080` erişimidir. LAN modu açılırsa Ktor API `0.0.0.0:8080`'e bağlanır; web dosya yöneticisi `http://<cihaz-lan-ip>:8080/_pocketpaas/manager/` adresinden, API'nin diğer yönetim rotalarıyla birlikte yerel ağdan erişilebilir. LAN HTTP şifreleme sağlamaz; yalnız güvenilir özel ağ/VPN üzerinde kullanın. Quick Tunnel ise Nginx `:8081` origin'ini kullanır ve yalnız `/manage/`, `/_pocketpaas/manager.css`, `/_pocketpaas/manager.js` ve `/_pocketpaas/files/*` yollarını loopback API'ye aktarır; diğer yönetim rotalarını (ör. `/api/*`) tünelden aktarmaz.
+
+## Site dosya yöneticisi
+
+Uygulama içindeki **Dosyalar** eylemi ve `https://<quick-tunnel-host>/manage/` web paneli aynı kayıtlı site kökünü kullanır. Web arayüzü API anahtarını kullanıcıdan ister; anahtarı `localStorage`/`sessionStorage`'a yazmaz ve çıkışta sekme belleğinden temizler. Her dosya işlemi Bearer doğrulaması yapar. Nginx yalnız `/manage/`, `/_pocketpaas/manager.css`, `/_pocketpaas/manager.js` ve `/_pocketpaas/files/*` yollarını loopback API'ye aktarır; `/api/*` yolunu tünelden aktarmaz. API anahtarı gizli tutulmalıdır; özellikle LAN API erişimi etkinse HTTP üzerinden paylaşmayın.
+
+Dosya API'si yalnızca kayıtlı site kimliği ve siteye göreli yol kabul eder; uygulama Termux ana dizinini, diğer runtime klasörlerini ya da başka siteleri dosya yöneticisi üzerinden açmaz. POSIX helper symlink/traversal denetimleri uygular. Noktayla başlayan dosyalar ve `node_modules`, `venv`, `__pycache__` dizinleri gizlenir/engellenir. Metin içeriği dosya başına 32 KiB UTF-8 ile sınırlıdır; HTTP JSON gövdesi en fazla 256 KiB olabilir (JSON kaçışlarının genişlemesi için pay bırakır). Binary upload/download bu sürümde sunulmaz.
+
+| İstek | Başarılı yanıt | İşlem |
+|---|---|---|
+| `GET /_pocketpaas/manager/` | 200, HTML | Statik web dosya yöneticisi kabuğu; dosya verisi döndürmez |
+| `GET /_pocketpaas/manager.css` / `.js` | 200 | Aynı arayüzün sabit CSS/JavaScript'i |
+| `GET /_pocketpaas/files/sites` | 200, JSON | Kayıtlı sitelerin güvenli kısa listesi |
+| `GET /_pocketpaas/files/sites/{id}/entries?path=...` | 200, JSON (`entries` dizisi) | Kökten göreli dizinin en fazla 128 girdisi |
+| `GET /_pocketpaas/files/sites/{id}/file?path=...` | 200, JSON | 32 KiB sınırındaki UTF-8 metin dosyasını okur |
+| `PUT /_pocketpaas/files/sites/{id}/file` | 204 | `{ "path": "index.html", "content": "..." }` ile atomik metin yazımı |
+| `POST /_pocketpaas/files/sites/{id}/directory` | 201 | `{ "path": "assets" }` ile klasör oluşturur |
+| `DELETE /_pocketpaas/files/sites/{id}/file?path=...` | 204 | Yalnız düzenli dosyayı siler; klasör silmez |
+
+Yukarıdaki dosya yöneticisi endpointleri kendi Bearer doğrulamasını yapar; hata cevapları genel kodlarla sınırlıdır. Genel API'nin endpoint tablosu aşağıdadır.
 
 ## Endpointler
 
@@ -21,7 +40,7 @@ API HTTP kullanır. LAN seçeneği token'ı ağ üzerinde şifrelemez; yalnız g
 | `POST /api/sites/{id}/start` | 200, site JSON | Mevcut deployment'ı başlatır |
 | `POST /api/sites/{id}/stop` | 200, site JSON | Sahip olunan backend'i durdurur ve proxy'yi kaldırır |
 
-Site JSON alanları: `id`, `domainName`, `internalPort`, `projectType`, `processId`, `publicUrl`, `status`, `logs`, `createdAt`. Nullable alanlar JSON'da null olarak bulunur. ID pozitif Long, zaman epoch milisaniyesidir. Stop/start gövdeleri boş olmalıdır. Domain dizin adı ve routing kimliğidir; DNS kaydı oluşturulmaz.
+Site JSON alanları: `id`, `domainName`, `internalPort`, `projectType`, `processId`, `publicUrl`, `status`, `logs`, `createdAt`, `customHostname`. Nullable alanlar JSON'da null olarak bulunur. `domainName` dizin adı ve `/sites/<domainName>/` routing kimliğidir; DNS hostname değildir. `customHostname` yalnız app-managed Cloudflare hostname'i gösteren ayrı alandır; bu API salt okunurdur ve custom hostname değiştirmez. ID pozitif Long, zaman epoch milisaniyesidir. Stop/start gövdeleri boş olmalıdır.
 
 Deployment tam iki multipart parça kullanır:
 

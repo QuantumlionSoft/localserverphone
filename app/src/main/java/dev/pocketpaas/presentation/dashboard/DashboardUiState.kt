@@ -7,6 +7,7 @@ import dev.pocketpaas.domain.model.NetworkState
 import dev.pocketpaas.domain.model.ProjectType
 import dev.pocketpaas.domain.model.RuntimeCapabilities
 import dev.pocketpaas.domain.model.Site
+import dev.pocketpaas.domain.network.CloudflareConnectionState
 import dev.pocketpaas.domain.remote.RemoteServerState
 import dev.pocketpaas.domain.remote.RemoteServerStatus
 import dev.pocketpaas.domain.services.ManagedServiceState
@@ -34,6 +35,15 @@ data class BackupDraft(
     val error: String? = null,
 )
 
+data class CloudflareDraft(
+    /** In-memory form input only; the API token is persisted separately by the Keystore store. */
+    val apiToken: String = "",
+    val accountId: String = "",
+    val zoneName: String = "",
+) {
+    override fun toString(): String = "CloudflareDraft(apiToken=[redacted], accountId=$accountId, zoneName=$zoneName)"
+}
+
 data class DashboardNotice(val id: Long, val text: String)
 
 data class DashboardUiState(
@@ -50,6 +60,11 @@ data class DashboardUiState(
     val showAddProject: Boolean = false,
     val draft: ProjectDraft = ProjectDraft(),
     val selectedSiteId: Long? = null,
+    val siteFileManager: SiteFileManagerUiState = SiteFileManagerUiState(),
+    val cloudflareConnection: CloudflareConnectionState = CloudflareConnectionState(),
+    val cloudflareDraft: CloudflareDraft = CloudflareDraft(),
+    val cloudflareBusy: Boolean = false,
+    val cloudflareError: String? = null,
     val operationBusy: Boolean = false,
     val operationDescription: String? = null,
     val lanAccess: Boolean = false,
@@ -69,6 +84,9 @@ data class DashboardUiState(
     val selectedSite: Site? get() = sites.firstOrNull { it.id == selectedSiteId }
     val serverRunning: Boolean get() = runtime.status == RemoteServerStatus.RUNNING
     val canManageSites: Boolean get() = serverRunning && !operationBusy && !siteReadFailed && !loadingSites
+    val canManageSiteFiles: Boolean get() = setupReady && !initializing && !operationBusy && !siteReadFailed && !loadingSites
+    val canManageCustomHostnames: Boolean get() =
+        setupReady && !initializing && !operationBusy && !siteReadFailed && !loadingSites && !cloudflareBusy
     val setupReady: Boolean get() = capabilities?.let { it.termuxInstalled && it.termuxCommandPermissionGranted } == true
     val databaseServices: List<ManagedServiceState> get() = managedServices.filter { it.serviceKey in DATABASE_KEYS }
     val sshConnectionCommand: String? get() = ssh.connectionCommand

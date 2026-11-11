@@ -119,6 +119,9 @@ android {
                 file("src/main/assets/pocketpaas_agent.py"),
                 file("src/main/assets/pocketpaas_files.py"),
                 file("src/main/assets/pocketpaas_deploy.py"),
+                file("src/main/assets/site_file_manager.html"),
+                file("src/main/assets/site_file_manager.css"),
+                file("src/main/assets/site_file_manager.js"),
             )
             it.testLogging.events("passed", "skipped", "failed")
         }

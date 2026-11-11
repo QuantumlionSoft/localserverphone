@@ -116,6 +116,14 @@ class DefaultSiteRepository @Inject constructor(
         }
     }
 
+    override suspend fun updateCustomHostname(id: Long, customHostname: String?) {
+        withContext(ioDispatcher) {
+            SiteInput.validateSiteId(id)
+            val normalized = customHostname?.let(SiteInput::normalizeCustomHostname)
+            requireAffectedRow(id, dao.updateCustomHostname(id, normalized))
+        }
+    }
+
     override suspend fun appendLogs(id: Long, text: String) {
         withContext(ioDispatcher) {
             SiteInput.validateSiteId(id)

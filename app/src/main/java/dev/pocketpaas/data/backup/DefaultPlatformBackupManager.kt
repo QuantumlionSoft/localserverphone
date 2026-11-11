@@ -52,6 +52,7 @@ class DefaultPlatformBackupManager @Inject constructor(
                 publicUrl = site.publicUrl,
                 status = site.status,
                 createdAt = site.createdAt,
+                customHostname = site.customHostname,
             )
         }
         val recentDeployments = deployments.recent(50)

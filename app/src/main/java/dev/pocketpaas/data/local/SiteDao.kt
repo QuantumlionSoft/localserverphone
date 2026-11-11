@@ -92,6 +92,9 @@ abstract class SiteDao {
     @Query("UPDATE sites SET publicUrl = :publicUrl WHERE id = :id")
     abstract suspend fun updatePublicUrl(id: Long, publicUrl: String?): Int
 
+    @Query("UPDATE sites SET customHostname = :customHostname WHERE id = :id")
+    abstract suspend fun updateCustomHostname(id: Long, customHostname: String?): Int
+
     @Query(
         "UPDATE sites SET status = :newStatus, processId = :processId " +
             "WHERE id = :id AND status = :expectedStatus",

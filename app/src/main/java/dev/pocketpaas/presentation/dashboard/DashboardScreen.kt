@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -84,6 +85,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -99,6 +101,7 @@ import dev.pocketpaas.domain.model.ProjectType
 import dev.pocketpaas.domain.model.RuntimeCapabilities
 import dev.pocketpaas.domain.model.Site
 import dev.pocketpaas.domain.model.SiteStatus
+import dev.pocketpaas.domain.model.TunnelMode
 import dev.pocketpaas.domain.remote.RemoteServerState
 import dev.pocketpaas.domain.remote.RemoteServerStatus
 import dev.pocketpaas.domain.services.ManagedServiceStatus
@@ -113,6 +116,12 @@ fun DashboardScreen(
     onMasterSwitch: (Boolean) -> Unit,
     onLanAccessChanged: (Boolean) -> Unit,
     onRetryNetwork: () -> Unit,
+    onCloudflareApiTokenChanged: (String) -> Unit = {},
+    onCloudflareAccountIdChanged: (String) -> Unit = {},
+    onCloudflareZoneNameChanged: (String) -> Unit = {},
+    onConfigureCloudflare: () -> Unit = {},
+    onDisconnectCloudflare: () -> Unit = {},
+    onSetSiteCustomHostname: (Long, String?) -> Unit = { _, _ -> },
     onRefresh: () -> Unit,
     onRequestTermuxPermission: () -> Unit,
     onAddProject: () -> Unit,
@@ -129,6 +138,16 @@ fun DashboardScreen(
     onCopyApiKey: () -> Unit,
     onNoticeConsumed: (Long) -> Unit,
     onOpenSetup: (() -> Unit)? = null,
+    onManageSiteFiles: (Long) -> Unit = {},
+    onCloseSiteFileManager: () -> Unit = {},
+    onNavigateSiteFiles: (String) -> Unit = {},
+    onOpenSiteTextFile: (String) -> Unit = {},
+    onEditSiteFileContent: (String) -> Unit = {},
+    onSaveSiteTextFile: () -> Unit = {},
+    onCreateSiteTextFile: (String) -> Unit = {},
+    onCreateSiteFileDirectory: (String) -> Unit = {},
+    onDeleteSiteTextFile: (String) -> Unit = {},
+    onRefreshSiteFiles: () -> Unit = {},
     // SSH
     onSshToggle: (Boolean) -> Unit = {},
     onSshPortChanged: (Int) -> Unit = {},
@@ -273,6 +292,16 @@ fun DashboardScreen(
                         }
                     }
                 }
+                item(key = "cloudflare-management") {
+                    CloudflareManagementCard(
+                        state = state,
+                        onApiTokenChanged = onCloudflareApiTokenChanged,
+                        onAccountIdChanged = onCloudflareAccountIdChanged,
+                        onZoneNameChanged = onCloudflareZoneNameChanged,
+                        onConfigure = onConfigureCloudflare,
+                        onDisconnect = onDisconnectCloudflare,
+                    )
+                }
                 if (state.operationBusy) {
                     item(key = "operation") { OperationCard(state.operationDescription, onCancelOperation) }
                 }
@@ -304,7 +333,19 @@ fun DashboardScreen(
                             }
                         }
                         items(state.sites, key = { it.id }) { site ->
-                            SiteCard(site, state.canManageSites, { onSiteSelected(site.id) }, { onStartSite(site.id) }, { onStopSite(site.id) })
+                            SiteCard(
+                                site = site,
+                                canManage = state.canManageSites,
+                                canManageFiles = state.canManageSiteFiles,
+                                cloudflareConfigured = state.cloudflareConnection.configured,
+                                canManageHostname = state.canManageCustomHostnames,
+                                cloudflareBusy = state.cloudflareBusy,
+                                onLogs = { onSiteSelected(site.id) },
+                                onStart = { onStartSite(site.id) },
+                                onStop = { onStopSite(site.id) },
+                                onFiles = { onManageSiteFiles(site.id) },
+                                onSetHostname = onSetSiteCustomHostname,
+                            )
                         }
                     }
                     DashboardTab.SERVICES -> {
@@ -420,6 +461,23 @@ fun DashboardScreen(
             onExportBackup = onExportBackup,
             onImportBackup = onImportBackup,
         )
+    }
+    state.siteFileManager.siteId?.let { siteId ->
+        state.sites.firstOrNull { it.id == siteId }?.let { site ->
+            SiteFileManagerSheet(
+                site = site,
+                state = state.siteFileManager,
+                onDismiss = onCloseSiteFileManager,
+                onNavigate = onNavigateSiteFiles,
+                onOpenFile = onOpenSiteTextFile,
+                onContentChanged = onEditSiteFileContent,
+                onSave = onSaveSiteTextFile,
+                onCreateFile = onCreateSiteTextFile,
+                onCreateDirectory = onCreateSiteFileDirectory,
+                onDeleteFile = onDeleteSiteTextFile,
+                onRefresh = onRefreshSiteFiles,
+            )
+        }
     }
     state.selectedSite?.takeIf { !state.showAddProject }?.let { site ->
         LogsSheet(site, state.canManageSites, onDismissLogs, { onStartSite(site.id) }, { onStopSite(site.id) })
@@ -720,6 +778,114 @@ private fun SetupCard(state: DashboardUiState, onRefresh: () -> Unit, onPermissi
 }
 
 @Composable
+private fun CloudflareManagementCard(
+    state: DashboardUiState,
+    onApiTokenChanged: (String) -> Unit,
+    onAccountIdChanged: (String) -> Unit,
+    onZoneNameChanged: (String) -> Unit,
+    onConfigure: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    val connected = state.cloudflareConnection.configured
+    val hasCustomHosts = state.sites.any { it.customHostname != null }
+    var confirmDisconnect by rememberSaveable { mutableStateOf(false) }
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("cloudflare-management"),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Özel alan adları · Cloudflare", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (connected) "Bağlı · ${state.cloudflareConnection.zoneName}"
+                    else "Named Tunnel ve DNS kayıtlarını uygulamadan yönetin.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                "API token kapsamları: hesapta Cloudflare Tunnel Write; zone için Zone Read, DNS Edit ve DNS Read. API ve Tunnel run tokenları Android Keystore ile şifrelenir; yedeklere eklenmez.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = state.cloudflareDraft.apiToken,
+                onValueChange = onApiTokenChanged,
+                modifier = Modifier.fillMaxWidth().testTag("cloudflare-token"),
+                enabled = !state.cloudflareBusy,
+                singleLine = true,
+                label = { Text("Cloudflare API token") },
+                placeholder = { Text(if (connected) "Aynı token için boş bırakın" else "Token") },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+            )
+            OutlinedTextField(
+                value = state.cloudflareDraft.accountId,
+                onValueChange = onAccountIdChanged,
+                modifier = Modifier.fillMaxWidth().testTag("cloudflare-account-id"),
+                enabled = !state.cloudflareBusy,
+                singleLine = true,
+                label = { Text("Cloudflare Account ID") },
+                placeholder = { Text("32 karakterlik hesap kimliği") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Next),
+            )
+            OutlinedTextField(
+                value = state.cloudflareDraft.zoneName,
+                onValueChange = onZoneNameChanged,
+                modifier = Modifier.fillMaxWidth().testTag("cloudflare-zone-name"),
+                enabled = !state.cloudflareBusy,
+                singleLine = true,
+                label = { Text("Yönetilecek zone adı") },
+                placeholder = { Text("example.com") },
+                supportingText = { Text("Site başına özel hostname bu zone içinde olmalıdır.") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+            )
+            state.cloudflareError?.let { ErrorText(it) }
+            if (state.cloudflareBusy) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text("Cloudflare ayarları güncelleniyor…", style = MaterialTheme.typography.bodySmall)
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Button(
+                    onClick = onConfigure,
+                    enabled = !state.cloudflareBusy && state.cloudflareDraft.accountId.isNotBlank() &&
+                        state.cloudflareDraft.zoneName.isNotBlank() && (connected || state.cloudflareDraft.apiToken.isNotBlank()),
+                    modifier = Modifier.testTag("cloudflare-connect"),
+                ) { Text(if (connected) "Doğrula / tokenı güncelle" else "Cloudflare'ı bağla") }
+                if (connected) {
+                    OutlinedButton(
+                        onClick = { confirmDisconnect = true },
+                        enabled = !state.cloudflareBusy && !hasCustomHosts,
+                        modifier = Modifier.testTag("cloudflare-disconnect"),
+                    ) { Text("Bağlantıyı kes") }
+                }
+            }
+            if (connected && hasCustomHosts) {
+                Text(
+                    "Bağlantıyı kesmeden önce projelerdeki tüm özel hostname atamalarını kaldırın.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+    if (confirmDisconnect) {
+        AlertDialog(
+            onDismissRequest = { confirmDisconnect = false },
+            title = { Text("Cloudflare Tunnel'i kaldır?") },
+            text = { Text("Uygulamanın yönettiği Named Tunnel ve şifreli bağlantı ayarları silinir. DNS hostname atamaları önce kaldırılmış olmalıdır.") },
+            confirmButton = {
+                TextButton(
+                    onClick = { confirmDisconnect = false; onDisconnect() },
+                    enabled = !state.cloudflareBusy,
+                ) { Text("Tunnel'i sil ve kes") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDisconnect = false }) { Text("Vazgeç") } },
+        )
+    }
+}
+
+@Composable
 private fun TunnelCard(state: DashboardUiState, onRetry: () -> Unit, onCopy: (String) -> Unit) {
     val url = state.network.publicUrl
     if (url != null) {
@@ -731,7 +897,29 @@ private fun TunnelCard(state: DashboardUiState, onRetry: () -> Unit, onCopy: (St
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("İNTERNETE AÇIK ADRES", style = MaterialTheme.typography.labelMedium, letterSpacing = 0.7.sp)
                 Text(url, style = MaterialTheme.typography.titleMedium)
-                Text("Adresi kopyalamak için dokunun. Projeler /sites/site-adı/ yolunda yayınlanır.", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    if (state.network.tunnelMode == TunnelMode.NAMED) {
+                        "Özel hostnameler kendi alan adlarının kökünde yayınlanır; proje kimliği değişmez."
+                    } else {
+                        "Quick Tunnel projeleri /sites/site-adı/ yolunda yayınlar. Kalıcı alan adı için aşağıdan Cloudflare'ı yapılandırın."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (state.network.tunnelMode != TunnelMode.NAMED) {
+                    SelectionContainer {
+                        Text(
+                            "Web dosya yöneticisi: ${url.trimEnd('/')}/manage/ · uygulamanın API anahtarı gerekir.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    Text(
+                        "Yönetim API'si özel alan adlarında yayınlanmaz; dosya yöneticisi için güvenli yerel erişimi kullanın.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     } else {
@@ -766,7 +954,19 @@ private fun OperationCard(description: String?, onCancel: () -> Unit) {
 }
 
 @Composable
-private fun SiteCard(site: Site, canManage: Boolean, onLogs: () -> Unit, onStart: () -> Unit, onStop: () -> Unit) {
+private fun SiteCard(
+    site: Site,
+    canManage: Boolean,
+    canManageFiles: Boolean,
+    cloudflareConfigured: Boolean,
+    canManageHostname: Boolean,
+    cloudflareBusy: Boolean,
+    onLogs: () -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onFiles: () -> Unit,
+    onSetHostname: (Long, String?) -> Unit,
+) {
     Card(onClick = onLogs, modifier = Modifier.fillMaxWidth().testTag("site-${site.id}")) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -783,9 +983,71 @@ private fun SiteCard(site: Site, canManage: Boolean, onLogs: () -> Unit, onStart
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (cloudflareConfigured) {
+                CustomHostnameEditor(
+                    site = site,
+                    enabled = canManageHostname && !cloudflareBusy,
+                    onSetHostname = onSetHostname,
+                )
+            } else {
+                Text(
+                    "Özel DNS hostname atamak için önce Cloudflare'ı yapılandırın. Bu proje adı (${site.domainName}) site yolu kimliğidir; DNS adı değildir.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 SiteAction(site, canManage, onStart, onStop)
                 TextButton(onClick = onLogs, modifier = Modifier.testTag("logs-${site.id}")) { Text("Canlı günlükler") }
+                TextButton(
+                    onClick = onFiles,
+                    enabled = canManageFiles,
+                    modifier = Modifier.testTag("files-${site.id}"),
+                ) { Text("Dosyalar") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CustomHostnameEditor(
+    site: Site,
+    enabled: Boolean,
+    onSetHostname: (Long, String?) -> Unit,
+) {
+    var hostname by rememberSaveable(site.id, site.customHostname) {
+        mutableStateOf(site.customHostname.orEmpty())
+    }
+    val candidate = hostname.trim().takeIf(String::isNotEmpty)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = hostname,
+            onValueChange = { hostname = it.take(253) },
+            modifier = Modifier.fillMaxWidth().testTag("custom-hostname-${site.id}"),
+            enabled = enabled,
+            singleLine = true,
+            label = { Text("Özel public hostname") },
+            placeholder = { Text("www.example.com") },
+            supportingText = {
+                Text("Ayrı DNS adı; zone içinde olmalı. Proje yolu /sites/${site.domainName}/ olarak aynı kalır.")
+            },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Button(
+                onClick = { onSetHostname(site.id, candidate) },
+                enabled = enabled && candidate != null && candidate != site.customHostname,
+                modifier = Modifier.testTag("save-custom-hostname-${site.id}"),
+            ) { Text(if (site.customHostname == null) "Hostname'i bağla" else "Hostname'i güncelle") }
+            if (site.customHostname != null) {
+                OutlinedButton(
+                    onClick = {
+                        hostname = ""
+                        onSetHostname(site.id, null)
+                    },
+                    enabled = enabled,
+                    modifier = Modifier.testTag("remove-custom-hostname-${site.id}"),
+                ) { Text("Hostname'i kaldır") }
             }
         }
     }
@@ -942,6 +1204,165 @@ private fun LogsSheet(site: Site, canManage: Boolean, onDismiss: () -> Unit, onS
             }
             TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Kapat") }
         }
+    }
+}
+
+@Composable
+private fun SiteFileManagerSheet(
+    site: Site,
+    state: SiteFileManagerUiState,
+    onDismiss: () -> Unit,
+    onNavigate: (String) -> Unit,
+    onOpenFile: (String) -> Unit,
+    onContentChanged: (String) -> Unit,
+    onSave: () -> Unit,
+    onCreateFile: (String) -> Unit,
+    onCreateDirectory: (String) -> Unit,
+    onDeleteFile: (String) -> Unit,
+    onRefresh: () -> Unit,
+) {
+    var createKind by rememberSaveable { mutableStateOf<String?>(null) }
+    var draftName by rememberSaveable { mutableStateOf("") }
+    var deletePath by rememberSaveable { mutableStateOf<String?>(null) }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        modifier = Modifier.testTag("site-file-manager-sheet"),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().fillMaxHeight(0.9f).imePadding().padding(horizontal = 20.dp).padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("${site.domainName} · Dosyalar", style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
+                    Text("Yalnız bu sitenin proje klasörü · metin dosyaları en fazla 32 KiB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TextButton(onClick = onDismiss, modifier = Modifier.testTag("close-site-file-manager")) { Text("Kapat") }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("/${state.directory}", modifier = Modifier.weight(1f), fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                OutlinedButton(onClick = onRefresh, enabled = !state.loading && !state.saving, modifier = Modifier.testTag("refresh-site-files")) { Text("Yenile") }
+                OutlinedButton(
+                    onClick = { draftName = ""; createKind = "directory" },
+                    enabled = !state.loading && !state.saving,
+                    modifier = Modifier.testTag("new-site-directory"),
+                ) { Text("Klasör") }
+                Button(
+                    onClick = { draftName = ""; createKind = "file" },
+                    enabled = !state.loading && !state.saving,
+                    modifier = Modifier.testTag("new-site-file"),
+                ) { Text("Dosya") }
+            }
+            if (state.directory.isNotEmpty()) {
+                TextButton(
+                    onClick = { onNavigate(state.directory.substringBeforeLast('/', "")) },
+                    enabled = !state.loading && !state.saving,
+                    modifier = Modifier.testTag("site-files-parent"),
+                ) { Text("← Üst klasör") }
+            }
+            if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            state.error?.let { ErrorText(it) }
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp, max = 260.dp).testTag("site-file-entries"),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(state.entries, key = { "${state.directory}/${it.name}" }) { entry ->
+                    val path = listOf(state.directory, entry.name).filter(String::isNotEmpty).joinToString("/")
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = { if (entry.isDirectory) onNavigate(path) else onOpenFile(path) },
+                            enabled = !state.loading && !state.saving,
+                            modifier = Modifier.weight(1f).testTag("site-file-${entry.name}"),
+                        ) {
+                            Text(
+                                (if (entry.isDirectory) "📁 " else "📄 ") + entry.name,
+                                modifier = Modifier.fillMaxWidth(),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (!entry.isDirectory) {
+                            Text(entry.sizeBytes?.let { "$it B" } ?: "Metin", style = MaterialTheme.typography.labelSmall)
+                            TextButton(
+                                onClick = { deletePath = path },
+                                enabled = !state.saving,
+                                modifier = Modifier.testTag("delete-site-file-${entry.name}"),
+                            ) { Text("Sil", color = MaterialTheme.colorScheme.error) }
+                        }
+                    }
+                }
+                if (state.entries.isEmpty() && !state.loading) {
+                    item { Text("Bu klasör boş.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(12.dp)) }
+                }
+            }
+            state.editorPath?.let { path ->
+                HorizontalDivider()
+                Text(path, style = MaterialTheme.typography.titleSmall, fontFamily = FontFamily.Monospace)
+                OutlinedTextField(
+                    value = state.editorContent,
+                    onValueChange = onContentChanged,
+                    modifier = Modifier.fillMaxWidth().weight(1f).heightIn(min = 128.dp).testTag("site-file-editor"),
+                    enabled = !state.saving,
+                    label = { Text("Metin içeriği") },
+                    minLines = 5,
+                    maxLines = 16,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onSave, enabled = !state.saving && !state.loading, modifier = Modifier.testTag("save-site-file")) {
+                        Text(if (state.saving) "Kaydediliyor…" else "Kaydet")
+                    }
+                    OutlinedButton(onClick = { deletePath = path }, enabled = !state.saving, modifier = Modifier.testTag("delete-open-site-file")) {
+                        Text("Dosyayı sil")
+                    }
+                }
+            }
+        }
+    }
+    if (createKind != null) {
+        val kind = createKind
+        AlertDialog(
+            onDismissRequest = { createKind = null },
+            title = { Text(if (kind == "file") "Yeni metin dosyası" else "Yeni klasör") },
+            text = {
+                OutlinedTextField(
+                    value = draftName,
+                    onValueChange = { draftName = it.take(255) },
+                    label = { Text("Ad") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    modifier = Modifier.testTag("new-site-entry-name"),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val name = draftName.trim()
+                        if (name.isNotEmpty()) {
+                            if (kind == "file") onCreateFile(name) else onCreateDirectory(name)
+                            createKind = null
+                        }
+                    },
+                    enabled = draftName.trim().isNotEmpty(),
+                ) { Text("Oluştur") }
+            },
+            dismissButton = { TextButton(onClick = { createKind = null }) { Text("Vazgeç") } },
+        )
+    }
+    deletePath?.let { path ->
+        AlertDialog(
+            onDismissRequest = { deletePath = null },
+            title = { Text("Dosya silinsin mi?") },
+            text = { Text(path) },
+            confirmButton = {
+                TextButton(
+                    onClick = { onDeleteFile(path); deletePath = null },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("Sil") }
+            },
+            dismissButton = { TextButton(onClick = { deletePath = null }) { Text("Vazgeç") } },
+        )
     }
 }
 

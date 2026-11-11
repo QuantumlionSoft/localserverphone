@@ -28,6 +28,7 @@ import dev.pocketpaas.domain.dashboard.DashboardNetworkState
 import dev.pocketpaas.domain.remote.LocalSiteOperations
 import dev.pocketpaas.data.remote.NettyRemoteApiServerFactory
 import dev.pocketpaas.data.remote.RemoteServerRuntimeManager
+import dev.pocketpaas.data.remote.SiteFileManagerWebAssets
 import dev.pocketpaas.data.remote.android.AndroidApiKeyStore
 import dev.pocketpaas.data.runtime.TermuxRuntimeRecovery
 import dev.pocketpaas.data.deployment.DeploymentOrchestrator
@@ -39,6 +40,7 @@ import dev.pocketpaas.domain.remote.RemoteApiServerFactory
 import dev.pocketpaas.domain.remote.RemoteServerRuntime
 import dev.pocketpaas.domain.remote.RemoteSiteOperations
 import dev.pocketpaas.domain.remote.RemoteUploadStorage
+import dev.pocketpaas.domain.files.SiteFileManager
 import dev.pocketpaas.domain.runtime.RuntimeRecovery
 import dev.pocketpaas.domain.runtime.RuntimeReset
 import dev.pocketpaas.data.local.ActivityEventDao
@@ -64,9 +66,17 @@ import dev.pocketpaas.data.services.TermuxServiceManager
 import dev.pocketpaas.data.ssh.TermuxSshManager
 import dev.pocketpaas.data.process.ShellExecutor
 import dev.pocketpaas.data.runtime.ShellRuntimeFileStore
+import dev.pocketpaas.data.runtime.RuntimeSiteFileManager
 import dev.pocketpaas.data.runtime.TermuxRuntimeArchiveTransfer
 import dev.pocketpaas.data.deployment.ShellDeploymentWorkspace
 import dev.pocketpaas.data.network.NetworkManager
+import dev.pocketpaas.data.network.CloudflareHttpTransport
+import dev.pocketpaas.data.network.UrlConnectionCloudflareTransport
+import dev.pocketpaas.data.network.CloudflareTunnelService
+import dev.pocketpaas.data.network.android.AndroidCloudflareSettingsStore
+import dev.pocketpaas.domain.network.CloudflareSettingsStore
+import dev.pocketpaas.domain.network.CloudflareTunnelProvider
+import dev.pocketpaas.domain.network.CloudflareSitePublisher
 import dev.pocketpaas.domain.deployment.DeploymentWorkspace
 import dev.pocketpaas.domain.deployment.RuntimeArchiveTransfer
 import dev.pocketpaas.domain.network.SiteProxy
@@ -84,6 +94,7 @@ import dev.pocketpaas.domain.process.ProcessLauncher
 import dev.pocketpaas.domain.process.ProcessExecutor
 import dev.pocketpaas.domain.repository.ServerStateRepository
 import dev.pocketpaas.domain.system.RuntimeFileStore
+import dev.pocketpaas.domain.system.RuntimeLayoutProvider
 import dev.pocketpaas.domain.system.RuntimeScriptSource
 import io.ktor.server.engine.ApplicationEngineFactory
 import io.ktor.server.netty.Netty
@@ -143,6 +154,15 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideSiteFileManagerWebAssets(@ApplicationContext context: Context): SiteFileManagerWebAssets =
+        SiteFileManagerWebAssets(
+            html = context.assets.open("site_file_manager.html").bufferedReader(Charsets.UTF_8).use { it.readText() },
+            css = context.assets.open("site_file_manager.css").bufferedReader(Charsets.UTF_8).use { it.readText() },
+            javaScript = context.assets.open("site_file_manager.js").bufferedReader(Charsets.UTF_8).use { it.readText() },
+        )
+
+    @Provides
+    @Singleton
     fun provideRemoteApiServerFactory(
         engineFactory: ApplicationEngineFactory<NettyApplicationEngine, NettyApplicationEngine.Configuration>,
         config: ServerConfig,
@@ -155,6 +175,8 @@ object AppModule {
         activity: dev.pocketpaas.domain.repository.ActivityRepository,
         deployments: dev.pocketpaas.domain.repository.DeploymentHistoryRepository,
         backup: PlatformBackupManager,
+        siteFiles: SiteFileManager,
+        siteFileManagerWebAssets: SiteFileManagerWebAssets,
     ): RemoteApiServerFactory = NettyRemoteApiServerFactory(
         engineFactory = engineFactory,
         config = config,
@@ -167,6 +189,8 @@ object AppModule {
         backup = backup,
         sshProvider = ssh::get,
         servicesProvider = services::get,
+        siteFiles = siteFiles,
+        siteFileManagerWebAssets = siteFileManagerWebAssets,
     )
 
     @Provides
@@ -180,6 +204,22 @@ object AppModule {
     @Provides
     @Singleton
     fun provideManagedNetwork(implementation: NetworkManager): ManagedNetwork = implementation
+
+    @Provides
+    @Singleton
+    fun provideCloudflareHttpTransport(implementation: UrlConnectionCloudflareTransport): CloudflareHttpTransport = implementation
+
+    @Provides
+    @Singleton
+    fun provideCloudflareSettingsStore(implementation: AndroidCloudflareSettingsStore): CloudflareSettingsStore = implementation
+
+    @Provides
+    @Singleton
+    fun provideCloudflareTunnelProvider(implementation: CloudflareTunnelService): CloudflareTunnelProvider = implementation
+
+    @Provides
+    @Singleton
+    fun provideCloudflareSitePublisher(implementation: NetworkManager): CloudflareSitePublisher = implementation
 
     @Provides
     @Singleton
@@ -267,7 +307,7 @@ object AppModule {
     fun provideDatabase(@ApplicationContext context: Context): PocketPaaSDatabase =
         Room.databaseBuilder(context, PocketPaaSDatabase::class.java, PocketPaaSDatabase.NAME)
             .setJournalMode(androidx.room.RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
-            .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3, DatabaseMigrations.MIGRATION_3_4)
+            .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3, DatabaseMigrations.MIGRATION_3_4, DatabaseMigrations.MIGRATION_4_5)
             .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
             .build()
 
@@ -334,6 +374,15 @@ object AppModule {
     @Provides
     @Singleton
     fun provideRuntimeFileStore(implementation: ShellRuntimeFileStore): RuntimeFileStore = implementation
+
+    @Provides
+    @Singleton
+    fun provideRuntimeLayoutProvider(process: ProcessExecutor): RuntimeLayoutProvider =
+        RuntimeLayoutProvider { process.runtimeLayout() }
+
+    @Provides
+    @Singleton
+    fun provideSiteFileManager(implementation: RuntimeSiteFileManager): SiteFileManager = implementation
 
     @Provides
     @Singleton

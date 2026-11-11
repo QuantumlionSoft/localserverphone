@@ -47,7 +47,17 @@ Kurulum sırasında **İşlemi iptal et**, kayıtlı deployment'ı iptal eder ve
 
 `CANNOT LINK EXECUTABLE` veya `cannot locate symbol SSL_set_quic_tls_cbs` görürseniz Nginx, Termux kitaplıklarıyla yüklenemiyordur; Cloudflare başlamadan önce bu düzelmelidir. Güncel kurulum komutunu **3 · Araçlar** sayfasından yeniden kopyalayıp Termux'ta çalıştırın; tam paket yükseltmesinin ve sürüm kontrollerinin tamamlanmasını bekleyin. APK güncellemesi Termux'un Nginx/OpenSSL kitaplıklarını tek başına değiştirmez. Hata sürerse tam metni kopyalayın; bu hata için Termux'u yeniden kaldırmanız gerekmez.
 
-Tünel URL kartına dokunmak adresi panoya kopyalar. Siteler `https://<tünel>/sites/<domain>/` üzerinden yayınlanır. Nginx cihaz içinde `127.0.0.1:8081`, yönetim API'si varsayılan `127.0.0.1:8080` kullanır. Quick Tunnel kalıcı production adresi/uptime garantisi sağlamaz. [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
+Tünel URL kartına dokunmak adresi panoya kopyalar. Quick Tunnel modunda siteler `https://<tünel>/sites/<domainName>/` yolunda yayınlanır. Nginx cihaz içinde `127.0.0.1:8081`, yönetim API'si varsayılan `127.0.0.1:8080` kullanır. Cloudflare ayarları doğrulanıp bir custom hostname atandığında uygulama Named Tunnel'a geçer ve bu siteyi `https://<customHostname>/` kökünde yayınlar. Son custom hostname kaldırılınca Quick Tunnel'a döner.
+
+## Özel alan adı ve Cloudflare
+
+1. Dashboard'daki **Özel alan adları · Cloudflare** kartında Cloudflare Account ID, zone adı ve API tokenı girin. Token için hesap kapsamında **Cloudflare Tunnel Write**, zone kapsamında **Zone Read**, **DNS Edit** ve **DNS Read** izinleri gereklidir.
+2. **Cloudflare'ı bağla** tokenı doğrular ve zone'un girilen hesaba ait olduğunu kontrol eder. API tokenı ve Cloudflare'dan alınan Remote Tunnel run tokenı Android Keystore AES-GCM ile şifrelenmiş uygulama özelindeki no-backup dosyada saklanır; ikisi de platform export/backup içine girmez. Aynı hesap/zone için token yenilerken token alanını boş bırakabilirsiniz. Hesap veya zone değiştirmek için önce tüm custom hostname'leri kaldırın, ardından **Bağlantıyı kes** ile uygulamanın eski Tunnel'ını silin.
+3. Site kartındaki **Özel public hostname** alanına `www.example.com` gibi zone içi bir hostname yazıp **Hostname'i bağla** düğmesine dokunun. Proje adı `domainName` değişmez; `/sites/<domainName>/` site/path kimliğidir, DNS adı değildir. Aynı custom hostname iki siteye atanamaz.
+4. Uygulama app-managed Named Tunnel ingress'ini ve Cloudflare proxied CNAME kaydını yönetir. Var olan A/AAAA/başka CNAME çakışması varsa kaydı ezmez; Cloudflare hata mesajını gösterir ve kullanıcıdan çakışmayı Cloudflare panelinde çözmesini ister. Hostname kaldırıldığında yalnız uygulamanın yönettiği ve hâlâ o Tunnel'ı hedefleyen CNAME temizlenir.
+5. Named Tunnel'da yönetim API'si ve web dosya yöneticisi özel hostname üzerinden yayınlanmaz. Dosya yöneticisini LAN modunda güvenilir yerel ağdan kullanın veya özel hostname atamalarını kaldırarak Quick Tunnel moduna dönün. Remote Tunnel run tokenı cloudflared için Termux runtime'da 0600 izinli dosyaya açılır; Tunnel durdurulunca veya Quick mode başlatılırken silinir. `--token-file` için cloudflared 2025.4.0 veya yenisi gerekir.
+
+Quick Tunnel geliştirme/test içindir ve kalıcı production adresi/uptime garantisi sağlamaz. [Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/).
 
 ## Uzak yönetim ve anahtar
 

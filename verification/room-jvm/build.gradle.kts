@@ -33,10 +33,12 @@ val productionSources = tasks.register<Sync>("syncProductionSources") {
             "dev/pocketpaas/data/services/**",
             "dev/pocketpaas/data/backup/**",
             "dev/pocketpaas/presentation/dashboard/DashboardUiState.kt",
+            "dev/pocketpaas/presentation/dashboard/SiteFileManagerUiState.kt",
         )
         exclude("dev/pocketpaas/data/local/DatabaseMigrations.kt")
         if (androidApiJar == null) exclude("dev/pocketpaas/data/process/termux/android/**")
         if (androidApiJar == null || androidHiltJar == null) exclude("dev/pocketpaas/data/deployment/android/**")
+        if (androidApiJar == null) exclude("dev/pocketpaas/data/network/android/**")
         if (androidApiJar == null || androidHiltJar == null || hiltCoreJar == null) exclude("dev/pocketpaas/data/remote/android/**")
         if (androidApiJar == null || androidHiltJar == null || hiltCoreJar == null) exclude("dev/pocketpaas/data/dashboard/android/**")
         if (androidApiJar == null || androidHiltJar == null) exclude("dev/pocketpaas/data/setup/android/**")
@@ -66,6 +68,9 @@ tasks.withType<Test>().configureEach {
         file("../../app/src/main/assets/pocketpaas_agent.py"),
         file("../../app/src/main/assets/pocketpaas_files.py"),
         file("../../app/src/main/assets/pocketpaas_deploy.py"),
+        file("../../app/src/main/assets/site_file_manager.html"),
+        file("../../app/src/main/assets/site_file_manager.css"),
+        file("../../app/src/main/assets/site_file_manager.js"),
     )
     testLogging.events("passed", "skipped", "failed")
     systemProperty("pocketpaas.production.root", file("../..").absolutePath)

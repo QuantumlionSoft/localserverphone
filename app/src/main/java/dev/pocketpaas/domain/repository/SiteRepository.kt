@@ -24,6 +24,9 @@ interface SiteRepository {
         processId: Int?,
     ): Boolean
     suspend fun updatePublicUrl(id: Long, publicUrl: String?)
+    suspend fun updateCustomHostname(id: Long, customHostname: String?) {
+        throw UnsupportedOperationException("Custom hostnames are not supported by this repository.")
+    }
     suspend fun appendLogs(id: Long, text: String)
     suspend fun clearLogs(id: Long)
     suspend fun deleteSiteIfInactive(id: Long)

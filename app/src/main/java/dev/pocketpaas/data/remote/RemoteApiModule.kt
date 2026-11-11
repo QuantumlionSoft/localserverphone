@@ -6,6 +6,9 @@ import dev.pocketpaas.core.config.RemoteApiPolicy
 import dev.pocketpaas.domain.backup.BackupRestoreSummary
 import dev.pocketpaas.domain.backup.PlatformBackupManager
 import dev.pocketpaas.domain.backup.SignedBackupEnvelope
+import dev.pocketpaas.domain.files.SiteFileManager
+import dev.pocketpaas.domain.files.SiteFileNotFoundException
+import dev.pocketpaas.domain.files.SiteFileTooLargeException
 import dev.pocketpaas.domain.logs.ActivityFilter
 import dev.pocketpaas.domain.logs.LogExportFormat
 import dev.pocketpaas.domain.logs.LogExportFormatter
@@ -49,6 +52,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.readAvailable
@@ -58,6 +62,8 @@ import java.security.MessageDigest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeoutOrNull
+
+data class SiteFileManagerWebAssets(val html: String, val css: String, val javaScript: String)
 
 data class RemoteApiDependencies(
     val sites: SiteRepository,
@@ -70,7 +76,18 @@ data class RemoteApiDependencies(
     val activity: ActivityRepository? = null,
     val deployments: DeploymentHistoryRepository? = null,
     val backup: PlatformBackupManager? = null,
+    val siteFiles: SiteFileManager? = null,
+    val siteFileManagerHtml: String? = null,
+    val siteFileManagerCss: String? = null,
+    val siteFileManagerJavaScript: String? = null,
 )
+
+data class RemoteSiteFileEntryResponse(val name: String, val isDirectory: Boolean, val sizeBytes: Long?)
+data class RemoteSiteFileEntriesResponse(val entries: List<RemoteSiteFileEntryResponse>)
+data class RemoteSiteFileRequest(val path: String? = null, val content: String? = null)
+data class RemoteSiteFilePathRequest(val path: String? = null)
+data class RemoteSiteFileContentResponse(val path: String, val content: String)
+data class RemoteFileManagerSiteResponse(val id: Long, val domainName: String, val projectType: String)
 
 data class RemoteErrorResponse(val error: String)
 
@@ -84,6 +101,7 @@ data class RemoteSiteResponse(
     val status: String,
     val logs: String,
     val createdAt: Long,
+    val customHostname: String? = null,
 )
 
 data class RemoteSshKeyResponse(
@@ -177,6 +195,8 @@ fun Application.installRemoteApi(dependencies: RemoteApiDependencies) {
                     RemoteErrorKind.FAILED -> HttpStatusCode.InternalServerError to "operation_failed"
                 }
                 is SiteNotFoundException -> HttpStatusCode.NotFound to "site_not_found"
+                is SiteFileNotFoundException -> HttpStatusCode.NotFound to "file_not_found"
+                is SiteFileTooLargeException -> HttpStatusCode.PayloadTooLarge to "file_too_large"
                 is SiteStillActiveException -> HttpStatusCode.Conflict to "operation_conflict"
                 is BadRequestException, is IllegalArgumentException -> HttpStatusCode.BadRequest to "invalid_request"
                 else -> HttpStatusCode.InternalServerError to "operation_failed"
@@ -406,8 +426,116 @@ fun Application.installRemoteApi(dependencies: RemoteApiDependencies) {
                 call.respond(summary)
             }
         }
+        get("/_pocketpaas/manager/") {
+            managerSecurityHeaders(call)
+            call.respondText(
+                requireManagerAsset(dependencies.siteFileManagerHtml),
+                contentType = ContentType.Text.Html,
+            )
+        }
+        get("/_pocketpaas/manager.css") {
+            managerSecurityHeaders(call)
+            call.respondText(
+                requireManagerAsset(dependencies.siteFileManagerCss),
+                contentType = ContentType.parse("text/css; charset=utf-8"),
+            )
+        }
+        get("/_pocketpaas/manager.js") {
+            managerSecurityHeaders(call)
+            call.respondText(
+                requireManagerAsset(dependencies.siteFileManagerJavaScript),
+                contentType = ContentType.parse("application/javascript; charset=utf-8"),
+            )
+        }
+        route("/_pocketpaas/files") {
+            get("/sites") {
+                verifyBearer(call, dependencies.keys)
+                requireEmptyBody(call)
+                val result = dependencies.sites.listSites().map {
+                    RemoteFileManagerSiteResponse(it.id, it.domainName, it.projectType.name)
+                }
+                call.respond(result)
+            }
+            get("/sites/{id}/entries") {
+                verifyBearer(call, dependencies.keys)
+                requireEmptyBody(call)
+                val manager = requireFeature(dependencies.siteFiles)
+                val id = positiveId(call, "id", "invalid_site_id")
+                val path = call.request.queryParameters["path"].orEmpty()
+                val result = admitted(admission) {
+                    operationDeadline(dependencies.policy) { manager.list(id, path) }
+                }
+                call.respond(RemoteSiteFileEntriesResponse(
+                    entries = result.map { RemoteSiteFileEntryResponse(it.name, it.isDirectory, it.sizeBytes) },
+                ))
+            }
+            get("/sites/{id}/file") {
+                verifyBearer(call, dependencies.keys)
+                requireEmptyBody(call)
+                val manager = requireFeature(dependencies.siteFiles)
+                val id = positiveId(call, "id", "invalid_site_id")
+                val path = requiredSiteFilePath(call)
+                val content = admitted(admission) {
+                    operationDeadline(dependencies.policy) { manager.read(id, path) }
+                }
+                call.respond(RemoteSiteFileContentResponse(path, content))
+            }
+            put("/sites/{id}/file") {
+                verifyBearer(call, dependencies.keys)
+                val manager = requireFeature(dependencies.siteFiles)
+                val id = positiveId(call, "id", "invalid_site_id")
+                val request = receiveBoundedJson<RemoteSiteFileRequest>(call, MAXIMUM_SITE_FILE_BODY_BYTES)
+                val path = request.path?.takeIf(String::isNotBlank)
+                    ?: throw RemoteApiFailure(HttpStatusCode.BadRequest, "invalid_request")
+                val content = request.content
+                    ?: throw RemoteApiFailure(HttpStatusCode.BadRequest, "invalid_request")
+                admitted(admission) {
+                    operationDeadline(dependencies.policy) { manager.write(id, path, content) }
+                }
+                call.respond(HttpStatusCode.NoContent)
+            }
+            post("/sites/{id}/directory") {
+                verifyBearer(call, dependencies.keys)
+                val manager = requireFeature(dependencies.siteFiles)
+                val id = positiveId(call, "id", "invalid_site_id")
+                val request = receiveBoundedJson<RemoteSiteFilePathRequest>(call, MAXIMUM_JSON_BODY_BYTES)
+                val path = request.path?.takeIf(String::isNotBlank)
+                    ?: throw RemoteApiFailure(HttpStatusCode.BadRequest, "invalid_request")
+                admitted(admission) {
+                    operationDeadline(dependencies.policy) { manager.createDirectory(id, path) }
+                }
+                call.respond(HttpStatusCode.Created)
+            }
+            delete("/sites/{id}/file") {
+                verifyBearer(call, dependencies.keys)
+                requireEmptyBody(call)
+                val manager = requireFeature(dependencies.siteFiles)
+                val id = positiveId(call, "id", "invalid_site_id")
+                val path = requiredSiteFilePath(call)
+                admitted(admission) {
+                    operationDeadline(dependencies.policy) { manager.delete(id, path) }
+                }
+                call.respond(HttpStatusCode.NoContent)
+            }
+        }
     }
 }
+
+private const val MAXIMUM_SITE_FILE_BODY_BYTES = 256 * 1024
+private const val SITE_FILE_MANAGER_CSP = "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+
+private fun managerSecurityHeaders(call: ApplicationCall) {
+    call.response.header("Content-Security-Policy", SITE_FILE_MANAGER_CSP)
+    call.response.header("Referrer-Policy", "no-referrer")
+    call.response.header("X-Frame-Options", "DENY")
+}
+
+private fun requireManagerAsset(asset: String?): String = asset
+    ?: throw RemoteApiFailure(HttpStatusCode.ServiceUnavailable, "feature_unavailable")
+
+private fun requiredSiteFilePath(call: ApplicationCall): String =
+    call.request.queryParameters["path"]?.takeIf(String::isNotBlank)
+        ?: throw RemoteApiFailure(HttpStatusCode.BadRequest, "invalid_request")
 
 private suspend fun verifyBearer(call: ApplicationCall, keys: ApiKeyStore) {
     val headers = call.request.headers.getAll(HttpHeaders.Authorization)
@@ -528,6 +656,7 @@ private data class CompletedOperation<T>(val value: T)
 private fun Site.response(policy: RemoteApiPolicy): RemoteSiteResponse = RemoteSiteResponse(
     id, domainName, internalPort, projectType.name, processId, publicUrl, status.name,
     if (policy.maximumReturnedLogCharacters == 0) "" else SiteInput.logTail(logs, policy.maximumReturnedLogCharacters), createdAt,
+    customHostname,
 )
 
 private fun SshAuthorizedKey.response(): RemoteSshKeyResponse = RemoteSshKeyResponse(

@@ -14,7 +14,7 @@ import androidx.room.TypeConverters
         SshSettingsEntity::class,
         SshAuthorizedKeyEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(SiteTypeConverters::class, PlatformTypeConverters::class)

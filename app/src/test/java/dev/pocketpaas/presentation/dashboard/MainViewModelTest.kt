@@ -21,6 +21,8 @@ import dev.pocketpaas.domain.model.RuntimeLayout
 import dev.pocketpaas.domain.model.Site
 import dev.pocketpaas.domain.model.SiteCollectionState
 import dev.pocketpaas.domain.model.SiteStatus
+import dev.pocketpaas.domain.network.CloudflareConnectionState
+import dev.pocketpaas.domain.network.CloudflareSitePublisher
 import dev.pocketpaas.domain.remote.ApiKeyStore
 import dev.pocketpaas.domain.remote.RemoteDeployRequest
 import dev.pocketpaas.domain.remote.RemoteServerRuntime
@@ -376,6 +378,42 @@ class MainViewModelTest {
     }
 
     @Test
+    fun cloudflareSetupClearsTheEnteredTokenAfterThePublisherStoresIt() = runTest {
+        val fixture = Fixture()
+        val model = fixture.create()
+        runCurrent()
+        model.setCloudflareApiToken("sensitive-cloudflare-token-123456")
+        model.setCloudflareAccountId("a".repeat(32))
+        model.setCloudflareZoneName("example.com")
+        assertFalse(model.state.value.toString().contains("sensitive-cloudflare-token-123456"))
+
+        model.configureCloudflare()
+        runCurrent()
+
+        assertTrue(model.state.value.cloudflareConnection.configured)
+        assertEquals("sensitive-cloudflare-token-123456", fixture.cloudflare.configuredToken)
+        assertEquals("", model.state.value.cloudflareDraft.apiToken)
+        assertFalse(model.state.value.cloudflareConnection.toString().contains("sensitive-cloudflare-token-123456"))
+        assertFalse(model.state.value.notice?.text.orEmpty().contains("sensitive-cloudflare-token-123456"))
+    }
+
+    @Test
+    fun customHostnameIsManagedSeparatelyFromTheSitePathIdentity() = runTest {
+        val fixture = Fixture()
+        fixture.sites.publish(SiteCollectionState.Ready(listOf(site)))
+        fixture.cloudflare.connection.value = CloudflareConnectionState(true, "a".repeat(32), "example.com")
+        val model = fixture.create()
+        runCurrent()
+
+        model.setSiteCustomHostname(site.id, "www.example.com")
+        runCurrent()
+
+        assertEquals(site.domainName, model.state.value.sites.single().domainName)
+        assertEquals("www.example.com", model.state.value.sites.single().customHostname)
+        assertEquals(site.id to "www.example.com", fixture.cloudflare.hostnameUpdates.single())
+    }
+
+    @Test
     fun consumingAnOldSnackbarCannotEraseANewerNotice() = runTest {
         val fixture = Fixture()
         val model = fixture.create()
@@ -398,14 +436,38 @@ class MainViewModelTest {
         val actions = FakeActions()
         val device = FakeDevice()
         val keys = FakeKeys()
+        val cloudflare = FakeCloudflare(sites)
         val platform = FakePlatform()
         val store = ViewModelStore().also(stores::add)
 
         fun create(): MainViewModel = ViewModelProvider.create(store, object : ViewModelProvider.Factory {
             override fun <T : ViewModel> create(modelClass: Class<T>): T = requireNotNull(modelClass.cast(
-                MainViewModel(sites, runtime, network, actions, device, keys, InitializePlatform(platform), DeploymentPolicy()),
+                MainViewModel(
+                    sites, runtime, network, actions, device, keys, InitializePlatform(platform), DeploymentPolicy(),
+                    cloudflare = cloudflare,
+                ),
             ))
         })[MainViewModel::class]
+    }
+
+    private class FakeCloudflare(private val sites: FakeSites) : CloudflareSitePublisher {
+        override val cloudflareConnection = MutableStateFlow(CloudflareConnectionState())
+        var configuredToken: String? = null
+        val hostnameUpdates = mutableListOf<Pair<Long, String?>>()
+
+        override suspend fun configureCloudflare(apiToken: String, accountId: String, zoneName: String) {
+            configuredToken = apiToken
+            cloudflareConnection.value = CloudflareConnectionState(true, accountId, zoneName)
+        }
+
+        override suspend fun disconnectCloudflare() {
+            cloudflareConnection.value = CloudflareConnectionState()
+        }
+
+        override suspend fun setCustomHostname(siteId: Long, hostname: String?) {
+            hostnameUpdates += siteId to hostname
+            sites.updateCustomHostname(siteId, hostname)
+        }
     }
 
     private class FakeActions : DashboardActions {
@@ -491,6 +553,9 @@ class MainViewModelTest {
             return true
         }
         override suspend fun updatePublicUrl(id: Long, publicUrl: String?) { replace(requireNotNull(getSite(id)).copy(publicUrl = publicUrl)) }
+        override suspend fun updateCustomHostname(id: Long, customHostname: String?) {
+            replace(requireNotNull(getSite(id)).copy(customHostname = customHostname))
+        }
         override suspend fun appendLogs(id: Long, text: String) { val current = requireNotNull(getSite(id)); replace(current.copy(logs = current.logs + text)) }
         override suspend fun clearLogs(id: Long) { replace(requireNotNull(getSite(id)).copy(logs = "")) }
         override suspend fun deleteSiteIfInactive(id: Long) { publish(SiteCollectionState.Ready(rows.value.filterNot { it.id == id })) }

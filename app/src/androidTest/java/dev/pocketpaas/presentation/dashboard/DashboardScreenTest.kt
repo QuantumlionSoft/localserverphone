@@ -19,6 +19,7 @@ import dev.pocketpaas.domain.model.ProjectType
 import dev.pocketpaas.domain.model.RuntimeCapabilities
 import dev.pocketpaas.domain.model.Site
 import dev.pocketpaas.domain.model.SiteStatus
+import dev.pocketpaas.domain.network.CloudflareConnectionState
 import dev.pocketpaas.domain.remote.RemoteServerState
 import dev.pocketpaas.domain.remote.RemoteServerStatus
 import dev.pocketpaas.presentation.theme.PocketPaaSTheme
@@ -119,6 +120,75 @@ class DashboardScreenTest {
     }
 
     @Test
+    fun siteCardOpensScopedFileManagerOnlyWhenTermuxIsReady() {
+        var state by mutableStateOf(ready.copy(sites = listOf(sampleSite)))
+        var opened: Long? = null
+        render(stateProvider = { state }, onManageFiles = { opened = it })
+
+        compose.onNodeWithTag("files-7").performScrollTo().assertIsEnabled().performClick()
+        compose.runOnIdle {
+            assertEquals(7L, opened)
+            state = state.copy(capabilities = RuntimeCapabilities(true, false, emptyList()))
+        }
+        compose.onNodeWithTag("files-7").performScrollTo().assertIsNotEnabled()
+    }
+
+    @Test
+    fun cloudflareFormCollectsCredentialsAndRequestsExplicitConnection() {
+        var state by mutableStateOf(ready)
+        var configured = 0
+        var token = ""
+        var account = ""
+        var zone = ""
+        render(
+            stateProvider = { state },
+            onCloudflareToken = {
+                token = it
+                state = state.copy(cloudflareDraft = state.cloudflareDraft.copy(apiToken = it))
+            },
+            onCloudflareAccount = {
+                account = it
+                state = state.copy(cloudflareDraft = state.cloudflareDraft.copy(accountId = it))
+            },
+            onCloudflareZone = {
+                zone = it
+                state = state.copy(cloudflareDraft = state.cloudflareDraft.copy(zoneName = it))
+            },
+            onConfigureCloudflare = { configured++ },
+        )
+
+        compose.onNodeWithTag("cloudflare-token").performScrollTo().performTextInput("secret-token")
+        compose.onNodeWithTag("cloudflare-account-id").performScrollTo().performTextInput("a".repeat(32))
+        compose.onNodeWithTag("cloudflare-zone-name").performScrollTo().performTextInput("example.com")
+        compose.onNodeWithTag("cloudflare-connect").performScrollTo().assertIsEnabled().performClick()
+
+        compose.runOnIdle {
+            assertEquals("secret-token", token)
+            assertEquals("a".repeat(32), account)
+            assertEquals("example.com", zone)
+            assertEquals(1, configured)
+        }
+    }
+
+    @Test
+    fun siteHostnameControlKeepsTheSitePathIdentityAndSendsDistinctDnsName() {
+        var requested: Pair<Long, String?>? = null
+        val state = ready.copy(
+            cloudflareConnection = CloudflareConnectionState(true, "a".repeat(32), "example.com"),
+            sites = listOf(sampleSite),
+        )
+        render(state, onSetHostname = { id, hostname -> requested = id to hostname })
+
+        compose.onNodeWithTag("custom-hostname-7").performScrollTo().performTextInput("www.example.com")
+        compose.onNodeWithTag("save-custom-hostname-7").performScrollTo().assertIsEnabled().performClick()
+
+        compose.runOnIdle {
+            assertEquals(7L to "www.example.com", requested)
+            assertEquals("my-app", sampleSite.domainName)
+        }
+    }
+
+    @Test
     fun repositoryUpdatesAppearInOpenLogsWithoutReopeningSheet() {
         var state by mutableStateOf(ready.copy(selectedSiteId = sampleSite.id, sites = listOf(sampleSite)))
         render(stateProvider = { state })
@@ -161,6 +231,12 @@ class DashboardScreenTest {
         onType: (ProjectType) -> Unit = {},
         onDeploy: () -> Unit = {},
         onCopyKey: () -> Unit = {},
+        onManageFiles: (Long) -> Unit = {},
+        onCloudflareToken: (String) -> Unit = {},
+        onCloudflareAccount: (String) -> Unit = {},
+        onCloudflareZone: (String) -> Unit = {},
+        onConfigureCloudflare: () -> Unit = {},
+        onSetHostname: (Long, String?) -> Unit = { _, _ -> },
     ) {
         compose.setContent {
             PocketPaaSTheme {
@@ -169,6 +245,11 @@ class DashboardScreenTest {
                     onMasterSwitch = onMaster,
                     onLanAccessChanged = onLan,
                     onRetryNetwork = {},
+                    onCloudflareApiTokenChanged = onCloudflareToken,
+                    onCloudflareAccountIdChanged = onCloudflareAccount,
+                    onCloudflareZoneNameChanged = onCloudflareZone,
+                    onConfigureCloudflare = onConfigureCloudflare,
+                    onSetSiteCustomHostname = onSetHostname,
                     onRefresh = {},
                     onRequestTermuxPermission = {},
                     onAddProject = onAdd,
@@ -184,6 +265,7 @@ class DashboardScreenTest {
                     onCancelOperation = {},
                     onCopyApiKey = onCopyKey,
                     onNoticeConsumed = {},
+                    onManageSiteFiles = onManageFiles,
                 )
             }
         }

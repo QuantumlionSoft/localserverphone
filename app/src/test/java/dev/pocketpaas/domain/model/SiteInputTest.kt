@@ -1,7 +1,9 @@
 package dev.pocketpaas.domain.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SiteInputTest {
@@ -27,6 +29,21 @@ class SiteInputTest {
         invalidNames.forEach { name ->
             assertThrows("Accepted unsafe domain: $name", IllegalArgumentException::class.java) {
                 SiteInput.normalizeDomainName(name)
+            }
+        }
+    }
+
+    @Test
+    fun customHostnamesAreCanonicalFullyQualifiedNamesAndCanBeBoundedToAZone() {
+        assertEquals("www.example.com", SiteInput.normalizeCustomHostname(" WWW.Example.COM. "))
+        assertEquals("xn--bcher-kva.example", SiteInput.normalizeCustomHostname("bücher.example"))
+        assertTrue(SiteInput.isHostnameInZone("www.example.com", "example.com"))
+        assertTrue(SiteInput.isHostnameInZone("example.com", "example.com"))
+        assertFalse(SiteInput.isHostnameInZone("notexample.com", "example.com"))
+        assertFalse(SiteInput.isHostnameInZone("example.com.evil", "example.com"))
+        listOf("", "my-app", "https://example.com", "a..example.com", "*.example.com").forEach { hostname ->
+            assertThrows("Accepted unsafe custom hostname: $hostname", IllegalArgumentException::class.java) {
+                SiteInput.normalizeCustomHostname(hostname)
             }
         }
     }

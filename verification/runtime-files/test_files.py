@@ -153,6 +153,31 @@ class RuntimeFilesTest(unittest.TestCase):
         with self.assertRaises(runtime.FileStoreError):
             self.call("list")
 
+    def test_list_entries_includes_sorted_regular_files_and_directories(self):
+        (self.root / "z-file.txt").write_bytes(b"1234")
+        (self.root / "a-dir").mkdir()
+        (self.root / "m-file.txt").write_bytes(b"x")
+        (self.root / "hidden").symlink_to(self.outside, target_is_directory=True)
+        with self.assertRaises(runtime.FileStoreError):
+            self.call("list_entries")
+        (self.root / "hidden").unlink()
+        self.assertEqual(
+            {"entries": [
+                {"name": "a-dir", "kind": "directory", "sizeBytes": None},
+                {"name": "m-file.txt", "kind": "file", "sizeBytes": 1},
+                {"name": "z-file.txt", "kind": "file", "sizeBytes": 4},
+            ]},
+            self.call("list_entries"),
+        )
+
+    def test_list_entries_shares_bounded_entry_limit(self):
+        for number in range(runtime.MAX_FILES):
+            (self.root / (str(number) + ".txt")).write_bytes(b"")
+        self.assertEqual(runtime.MAX_FILES, len(self.call("list_entries")["entries"]))
+        (self.root / "too-many").mkdir()
+        with self.assertRaises(runtime.FileStoreError):
+            self.call("list_entries")
+
     def test_paths_cannot_escape_root_or_use_dot_segments(self):
         invalid = [str(self.outside / "escape"), str(self.root) + "/../outside/escape",
                    str(self.root) + "/./escape", str(self.root) + "-other/escape",

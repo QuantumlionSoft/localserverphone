@@ -11,6 +11,7 @@ import dev.pocketpaas.domain.model.SiteStatus
     indices = [
         Index(value = ["domainName"], unique = true),
         Index(value = ["internalPort"], unique = true),
+        Index(value = ["customHostname"], unique = true),
     ],
 )
 data class SiteEntity(
@@ -23,4 +24,5 @@ data class SiteEntity(
     val status: SiteStatus = SiteStatus.STOPPED,
     val logs: String = "",
     val createdAt: Long,
+    val customHostname: String? = null,
 )

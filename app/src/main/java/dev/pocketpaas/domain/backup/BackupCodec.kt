@@ -3,6 +3,7 @@ package dev.pocketpaas.domain.backup
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonSyntaxException
 import dev.pocketpaas.core.config.SshPolicy
+import dev.pocketpaas.domain.model.SiteInput
 import dev.pocketpaas.domain.services.ServiceCatalog
 import dev.pocketpaas.domain.ssh.SshAuthorizedKey
 import dev.pocketpaas.domain.ssh.SshKeyFormat
@@ -133,11 +134,23 @@ object BackupCodec {
             }
         }
 
+        val normalizedSites = snapshot.sites.map { site ->
+            val hostname = site.customHostname?.let(SiteInput::normalizeCustomHostname)
+            require(site.customHostname == null || hostname == site.customHostname) {
+                "Yedekteki özel hostname kanonik biçimde değil."
+            }
+            site.copy(customHostname = hostname)
+        }
+        val customHostnames = normalizedSites.mapNotNull { it.customHostname }
+        require(customHostnames.distinct().size == customHostnames.size) {
+            "Yedekte bir özel hostname birden fazla siteye atanmış."
+        }
         val validServices = snapshot.services.filter { ServiceCatalog.find(it.serviceKey) != null }
         return snapshot.copy(
             sshSettings = settings.copy(enabled = false), // Güvenlik: geri yükleme sonrası SSH kendiliğinden başlamaz
             sshAuthorizedKeys = normalizedKeys,
             services = validServices,
+            sites = normalizedSites,
         )
     }
 

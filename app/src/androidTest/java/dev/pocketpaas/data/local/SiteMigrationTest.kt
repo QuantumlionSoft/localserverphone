@@ -39,13 +39,14 @@ class SiteMigrationTest {
 
         helper.runMigrationsAndValidate(
             databaseName,
-            4,
+            5,
             true,
             DatabaseMigrations.MIGRATION_1_2,
             DatabaseMigrations.MIGRATION_2_3,
             DatabaseMigrations.MIGRATION_3_4,
+            DatabaseMigrations.MIGRATION_4_5,
         ).use { database ->
-            assertEquals(4, database.version)
+            assertEquals(5, database.version)
             database.query(
                 "SELECT id, installationId, createdAtEpochMillis, publicUrl FROM platform_settings ORDER BY id",
             ).use { cursor ->
@@ -60,6 +61,37 @@ class SiteMigrationTest {
             database.query("SELECT COUNT(*) FROM sites").use { cursor ->
                 assertTrue(cursor.moveToFirst())
                 assertEquals(0L, cursor.getLong(0))
+            }
+        }
+    }
+
+    @Test
+    fun migrationFromVersionFourPreservesSitesAndAddsAnOptionalUniqueCustomHostname() {
+        val domainName = "legacy-site"
+        helper.createDatabase(databaseName, 4).use { database ->
+            database.execSQL(
+                "INSERT INTO sites (domainName, internalPort, projectType, processId, publicUrl, status, logs, createdAt) " +
+                    "VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)",
+                arrayOf<Any>(domainName, 18_000, "STATIC", "STOPPED", "legacy logs", 1_700_000_000_000L),
+            )
+        }
+
+        helper.runMigrationsAndValidate(databaseName, 5, true, DatabaseMigrations.MIGRATION_4_5).use { database ->
+            database.query("SELECT id, domainName, customHostname, logs FROM sites").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(domainName, cursor.getString(1))
+                assertTrue(cursor.isNull(2))
+                assertEquals("legacy logs", cursor.getString(3))
+                assertFalse(cursor.moveToNext())
+            }
+            database.query("PRAGMA index_list(`sites`)").use { cursor ->
+                var foundUniqueHostnameIndex = false
+                while (cursor.moveToNext()) {
+                    if (cursor.getString(1) == "index_sites_customHostname") {
+                        foundUniqueHostnameIndex = cursor.getInt(2) == 1
+                    }
+                }
+                assertTrue(foundUniqueHostnameIndex)
             }
         }
     }

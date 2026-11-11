@@ -2,7 +2,10 @@ package dev.pocketpaas.domain.network
 
 import dev.pocketpaas.domain.model.Site
 
-data class SiteProxySnapshot(val configuration: String?)
+data class SiteProxySnapshot(
+    val configuration: String?,
+    val customHostConfiguration: String? = null,
+)
 
 interface SiteProxy {
     suspend fun ensureServerRunning()

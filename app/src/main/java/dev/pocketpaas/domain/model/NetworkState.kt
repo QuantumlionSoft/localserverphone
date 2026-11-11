@@ -1,6 +1,7 @@
 package dev.pocketpaas.domain.model
 
 enum class NetworkServiceStatus { STOPPED, STARTING, RUNNING, FAILED }
+enum class TunnelMode { QUICK, NAMED }
 
 data class NetworkState(
     val nginxStatus: NetworkServiceStatus = NetworkServiceStatus.STOPPED,
@@ -9,4 +10,5 @@ data class NetworkState(
     val tunnelProcessId: Int? = null,
     val publicUrl: String? = null,
     val lastError: String? = null,
+    val tunnelMode: TunnelMode? = null,
 )

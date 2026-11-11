@@ -4,6 +4,7 @@ import dev.pocketpaas.core.config.ProcessPolicy
 import dev.pocketpaas.data.process.LocalProcessLauncher
 import dev.pocketpaas.data.process.ShellExecutor
 import dev.pocketpaas.domain.model.RuntimeLayout
+import dev.pocketpaas.domain.system.RuntimeFileEntry
 import dev.pocketpaas.domain.system.RuntimeScriptSource
 import java.io.File
 import java.io.IOException
@@ -34,6 +35,7 @@ class ShellRuntimeFileStoreTest {
             store.writeTextAtomic(path, text)
             assertEquals(text, store.readTextOrNull(path))
             assertEquals(listOf(path), store.listFiles(directory.path))
+            assertEquals(listOf(RuntimeFileEntry("unicode.conf", false, text.toByteArray().size.toLong())), store.listEntries(directory.path))
             store.writeTextAtomic(path, "replacement")
             assertEquals("replacement", store.readTextOrNull(path))
             store.delete(path)
