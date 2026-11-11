@@ -293,6 +293,9 @@ class DefaultSiteRepositoryTest {
             return update(id) { it.copy(publicUrl = publicUrl) }
         }
 
+        override suspend fun updateCustomHostname(id: Long, customHostname: String?): Int =
+            update(id) { it.copy(customHostname = customHostname) }
+
         override suspend fun compareAndSetRuntimeState(
             id: Long,
             expectedStatus: SiteStatus,

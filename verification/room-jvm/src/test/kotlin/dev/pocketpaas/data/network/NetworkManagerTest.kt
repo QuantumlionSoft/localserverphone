@@ -932,6 +932,8 @@ class NetworkManagerTest {
     }
 
     private companion object {
+        const val ACCOUNT_ID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        const val TUNNEL_ID = "12345678-1234-1234-1234-123456789abc"
         const val ROOT = "/termux/home/.pocket-paas"
         const val PUBLIC_HOST = "blue-bird.trycloudflare.com"
         const val PUBLIC_URL = "https://$PUBLIC_HOST"
