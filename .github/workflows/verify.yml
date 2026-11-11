@@ -131,6 +131,26 @@ jobs:
             fi
           } > report.md
           gh api repos/${GITHUB_REPOSITORY}/issues/1/comments -f body="$(cat report.md)" || true
+      - name: Post pull-request build diagnostics
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "### Build diagnostics for \`${GITHUB_SHA::7}\`"
+            echo "- Room JVM outcome: **${{ steps.room_jvm.outcome }}**"
+            echo "- Android build outcome: **${{ steps.android_build.outcome }}**"
+            for log in room-jvm.log android-build.log; do
+              if [ -f "$log" ]; then
+                echo "#### $log"
+                echo '```text'
+                grep -E "^e:|^w:|FAILURE:|BUILD FAILED|FAILED|Exception|Error" "$log" | tail -n 35 || true
+                tail -n 15 "$log"
+                echo '```'
+              fi
+            done
+          } > pr-build-report.md
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.pull_request.number }}/comments" -f body="$(cat pr-build-report.md)" || true
       - name: Enforce Build Success
         run: |
           if [ "${{ steps.room_jvm.outcome }}" != "success" ] || [ "${{ steps.android_build.outcome }}" != "success" ]; then
