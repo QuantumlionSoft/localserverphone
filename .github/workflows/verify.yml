@@ -161,7 +161,7 @@ jobs:
                 message=${message//'%'/'%25'}
                 message=${message//$'\r'/'%0D'}
                 echo "::error title=${log}::${message}"
-              done < <(grep -E '^e:|FAILURE:|BUILD FAILED|Execution failed for task|^[[:space:]]*[^[:space:]].* FAILED$' "$log" | tail -n 20 || true)
+              done < <(grep -E '^[ew]:|FAILURE:|BUILD FAILED|Execution failed for task|^[[:space:]]*[^[:space:]].* FAILED$' "$log" | tail -n 20 || true)
             fi
           done
       - name: Enforce Build Success
