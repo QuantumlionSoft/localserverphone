@@ -71,7 +71,7 @@ class CloudflareTunnelService @Inject constructor(
             )
             settingsStore.write(next)
             publish(next)
-            next
+            mutableConnection.value
         }
 
     override suspend fun disconnect() = operations.withLock {
