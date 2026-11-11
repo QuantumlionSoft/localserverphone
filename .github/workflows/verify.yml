@@ -85,6 +85,14 @@ jobs:
           name: pocketpaas-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Upload pull-request debug APK for review
+        if: github.event_name == 'pull_request' && steps.room_jvm.outcome == 'success' && steps.android_build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocketpaas-debug-apk-preview
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+          if-no-files-found: error
       - name: Report Build Diagnostics to Issue
         if: always() && github.event_name == 'push'
         env:
