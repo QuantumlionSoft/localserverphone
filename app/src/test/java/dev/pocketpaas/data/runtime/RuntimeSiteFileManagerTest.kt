@@ -25,7 +25,7 @@ import org.junit.Test
 
 class RuntimeSiteFileManagerTest {
     @Test
-    fun listsAndEditsOnlyFilesUnderRegisteredProjectRoot() = runBlocking {
+    fun listsAndEditsOnlyFilesUnderRegisteredProjectRoot(): Unit = runBlocking {
         val files = MemoryFiles()
         val manager = manager(files)
         manager.createDirectory(1, "assets")
@@ -41,7 +41,7 @@ class RuntimeSiteFileManagerTest {
     }
 
     @Test
-    fun rejectsTraversalAbsolutePathsAndHiddenComponents() = runBlocking {
+    fun rejectsTraversalAbsolutePathsAndHiddenComponents(): Unit = runBlocking {
         val manager = manager(MemoryFiles())
         listOf("../other/index.html", "/etc/passwd", "assets/../../logs", ".env", "assets/.secret")
             .forEach { path ->
@@ -55,7 +55,7 @@ class RuntimeSiteFileManagerTest {
     }
 
     @Test
-    fun missingSitesAndFilesAreReportedWithoutEscaping() = runBlocking {
+    fun missingSitesAndFilesAreReportedWithoutEscaping(): Unit = runBlocking {
         val manager = manager(MemoryFiles())
         assertThrows(SiteNotFoundException::class.java) {
             runBlocking { manager.read(999, "index.html") }
@@ -66,7 +66,7 @@ class RuntimeSiteFileManagerTest {
     }
 
     @Test
-    fun enforcesTextLimitAndDoesNotDeleteDirectoriesAsFiles() = runBlocking {
+    fun enforcesTextLimitAndDoesNotDeleteDirectoriesAsFiles(): Unit = runBlocking {
         val manager = manager(MemoryFiles())
         assertThrows(SiteFileTooLargeException::class.java) {
             runBlocking { manager.write(1, "large.txt", "x".repeat(32 * 1024 + 1)) }

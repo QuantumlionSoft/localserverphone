@@ -189,11 +189,13 @@ class RoomSqlVerificationTest {
         val driver = BundledSQLiteDriver()
         val old = Room.databaseBuilder<PhaseTwoDatabase>(file.absolutePath)
             .setDriver(driver).setQueryCoroutineContext(Dispatchers.IO).build()
-        val original: SiteEntity
+        val originalId: Long
         try {
             old.platformSettingsDao().getOrCreate(LegacyPlatformSettingsEntity(installationId = "v2-id", createdAtEpochMillis = 77))
-            original = create(old.siteDao(), "preserved.example")
-            old.siteDao().appendLogs(original.id, "existing logs", 65_536)
+            originalId = old.siteDao().insertSite(
+                LegacySiteEntityV2(domainName = "preserved.example", internalPort = 20_000, projectType = ProjectType.STATIC, createdAt = 1L),
+            )
+            old.siteDao().appendLogs(originalId, "existing logs", 65_536)
         } finally { old.close() }
         val database = Room.databaseBuilder<PocketPaaSDatabase>(file.absolutePath)
             .setDriver(driver).setQueryCoroutineContext(Dispatchers.IO)
@@ -201,8 +203,8 @@ class RoomSqlVerificationTest {
         assertEquals("v2-id", database.platformSettingsDao().getSettings()?.installationId)
         assertEquals(77L, database.platformSettingsDao().getSettings()?.createdAtEpochMillis)
         assertNull(database.platformSettingsDao().observePublicUrl().first())
-        assertEquals(original.internalPort, database.siteDao().getSite(original.id)?.internalPort)
-        assertEquals("existing logs", database.siteDao().getSite(original.id)?.logs)
+        assertEquals(20_000, database.siteDao().getSite(originalId)?.internalPort)
+        assertEquals("existing logs", database.siteDao().getSite(originalId)?.logs)
         assertEquals(1, database.platformSettingsDao().updatePublicUrl("https://gateway.trycloudflare.com"))
         assertEquals("https://gateway.trycloudflare.com", database.platformSettingsDao().observePublicUrl().first())
         assertEquals(1, database.platformSettingsDao().updatePublicUrl(null))

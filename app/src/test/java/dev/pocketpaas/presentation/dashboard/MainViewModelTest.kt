@@ -401,7 +401,7 @@ class MainViewModelTest {
     fun customHostnameIsManagedSeparatelyFromTheSitePathIdentity() = runTest {
         val fixture = Fixture()
         fixture.sites.publish(SiteCollectionState.Ready(listOf(site)))
-        fixture.cloudflare.connection.value = CloudflareConnectionState(true, "a".repeat(32), "example.com")
+        fixture.cloudflare.cloudflareConnection.value = CloudflareConnectionState(true, "a".repeat(32), "example.com")
         val model = fixture.create()
         runCurrent()
 

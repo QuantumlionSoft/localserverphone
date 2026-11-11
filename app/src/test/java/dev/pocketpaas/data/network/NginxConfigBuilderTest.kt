@@ -63,12 +63,12 @@ class NginxConfigBuilderTest {
     @Test
     fun candidateMasterIncludesOnlySuppliedPathsAndUsesItsRevision() {
         val paths = listOf("$root/nginx/conf.d/first.conf", "$root/nginx/conf.d/.candidate-second")
-        val config = builder.renderMaster(layout, paths, "revision-2")
+        val config = builder.renderMaster(layout, paths, "revision-2", emptyList())
         assertTrue(config.contains("include \"${paths[0]}\";"))
         assertTrue(config.contains("include \"${paths[1]}\";"))
         assertFalse(config.contains("*.conf"))
         assertTrue(config.contains("return 200 \"revision-2\";"))
-        val empty = builder.renderMaster(layout, emptyList())
+        val empty = builder.renderMaster(layout, emptyList(), customHostIncludePaths = emptyList())
         assertFalse(empty.contains("include "))
     }
 
@@ -115,7 +115,7 @@ class NginxConfigBuilderTest {
         val config = builder.renderVirtualHost(site(ProjectType.REACT), "$root/htdocs/example.com/dist", layout)
         assertTrue(config.contains("error_page 404 = /sites/example.com/index.html;"))
         assertTrue(config.contains("location = /sites/example.com/index.html {"))
-        assertTrue(config.contains("alias \"$root/htdocs/example.com/\";"))
+        assertTrue(config.contains("alias \"$root/htdocs/example.com/dist/\";"))
         assertFalse(config.contains("try_files"))
         assertEquals(1, Regex("error_page").findAll(config).count())
     }
